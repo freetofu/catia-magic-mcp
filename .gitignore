@@ -1,0 +1,30 @@
+# --- Build outputs ---
+target/
+*.jar
+*.class
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- Node ---
+node_modules/
+package-lock.json
+
+# --- Logs ---
+*.log
+build.log
+
+# --- Editor / tooling ---
+.claude/
+.idea/
+.vscode/
+*.iml
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store

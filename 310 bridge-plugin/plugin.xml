@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MagicDraw 플러그인 디스크립터
+  이 파일과 JAR 파일을 <MagicDraw 설치폴더>/plugins/com.example.mcpbridge/ 에 복사하세요.
+-->
+<plugin
+    id="com.example.mcpbridge"
+    name="MCP Bridge Plugin"
+    version="1.0.0"
+    provider-name="MCP Bridge"
+    class="com.example.mcpbridge.MCPBridgePlugin">
+
+    <requires>
+        <api version="1.0"/>
+    </requires>
+
+    <runtime>
+        <!-- 빌드 후 생성되는 JAR 파일명 (pom.xml의 finalName과 일치해야 함) -->
+        <library name="mcp-bridge-plugin-1.0.0.jar"/>
+        <!-- JSON 파싱 라이브러리 -->
+        <library name="json-simple-1.1.1.jar"/>
+    </runtime>
+
+</plugin>

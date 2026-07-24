@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>com.example</groupId>
+    <artifactId>mcp-bridge-plugin</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    <name>CATIA Magic MCP Bridge Plugin</name>
+
+    <properties>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!--
+          ★ 반드시 수정하세요 ★
+          CATIA Magic (MagicDraw) 설치 경로를 입력하세요.
+          Windows 예시: C:/Program Files/Dassault Systemes/CATIA Magic 2026x
+        -->
+        <magicdraw.install.dir>D:/Program Files/Magic Systems of Systems Architect 26x HF1</magicdraw.install.dir>
+    </properties>
+
+    <dependencies>
+        <!-- MagicDraw 2026x 핵심 API - 플러그인/모델링 API 전체 포함 (34MB) -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>core</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/core-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- MagicDraw UML2 모델 API -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>uml2</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.uml2-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- MagicDraw 모델링 API (SessionManager, ModelElementsManager 등) -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>modeling</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.modeling-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- EMF Ecore (UML 메타모델 기반) -->
+        <dependency>
+            <groupId>org.eclipse.emf</groupId>
+            <artifactId>org.eclipse.emf.ecore</artifactId>
+            <version>2.38.0</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/org.eclipse.emf.ecore-2.38.0.jar</systemPath>
+        </dependency>
+
+        <!-- EMF Common -->
+        <dependency>
+            <groupId>org.eclipse.emf</groupId>
+            <artifactId>org.eclipse.emf.common</artifactId>
+            <version>2.41.0</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/org.eclipse.emf.common-2.41.0.jar</systemPath>
+        </dependency>
+
+        <!-- MagicDraw CE (플러그인 기반 클래스) -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>ce</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.ce-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- Dassault foundation (ModelElementRegistry, ModelElementProject 포함) -->
+        <dependency>
+            <groupId>com.dassault_systemes.modeler</groupId>
+            <artifactId>foundation</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/com.dassault_systemes.modeler.foundation-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- MagicDraw Core Diagram (DiagramPresentationImplementer 포함) -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>core.diagram</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.core.diagram-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- common (BaseElement 등 포함) -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>common</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/common-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- JMI 1.0 (javax.jmi.reflect.RefObject — Element/NamedElement 슈퍼인터페이스) -->
+        <dependency>
+            <groupId>javax.jmi</groupId>
+            <artifactId>jmi</artifactId>
+            <version>1.0</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/javax.jmi-1.0.jar</systemPath>
+        </dependency>
+
+        <!-- MagicDraw Foundation (com.nomagic.magicdraw.foundation.MDObject) -->
+        <dependency>
+            <groupId>com.nomagic.magicdraw</groupId>
+            <artifactId>foundation</artifactId>
+            <version>2026x</version>
+            <scope>system</scope>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.foundation-2026.0.0-99-55fec9c2.jar</systemPath>
+        </dependency>
+
+        <!-- JSON 파싱 (경량 json-simple) -->
+        <dependency>
+            <groupId>com.googlecode.json-simple</groupId>
+            <artifactId>json-simple</artifactId>
+            <version>1.1.1</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>mcp-bridge-plugin-1.0.0</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.3.0</version>
+            </plugin>
+
+            <!-- json-simple JAR을 target/ 폴더에 함께 복사 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-json-simple</id>
+                        <phase>package</phase>
+                        <goals><goal>copy</goal></goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>com.googlecode.json-simple</groupId>
+                                    <artifactId>json-simple</artifactId>
+                                    <version>1.1.1</version>
+                                    <outputDirectory>${project.build.directory}</outputDirectory>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
