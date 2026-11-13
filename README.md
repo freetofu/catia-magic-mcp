@@ -1,44 +1,88 @@
 # CATIA Magic MCP
 
-CATIA Magic(MagicDraw / Magic Systems of Systems Architect 2026x) 모델을
-조회·편집하기 위한 MCP(Model Context Protocol) 서버와 브릿지 플러그인입니다.
+An MCP (Model Context Protocol) server and bridge plugin for reading and editing
+CATIA Magic (MagicDraw 2026x / Cyber Systems Engineer / Systems of Systems Architect) models.
 
-Claude 같은 MCP 클라이언트가 이 서버를 통해 실행 중인 CATIA Magic의
-프로젝트, 다이어그램, 요소, 관계, 매트릭스 등을 다룰 수 있습니다.
+Through this server, an MCP client such as Claude can work with projects, diagrams,
+elements, relations, stereotype properties and dependency matrices in a running CATIA Magic instance.
 
-## 구성
+## Architecture
 
 ```
-310 bridge-plugin/   MagicDraw 안에서 도는 Java 플러그인 (localhost:18080 HTTP 브릿지)
-320 mcp-server/      MCP 서버 (Python) — MCP 클라이언트와 브릿지 사이 중계
+MCP client (Claude) --stdio--> 320 mcp-server (Python, FastMCP)
+                    --HTTP-->  310 bridge-plugin (Java, inside CATIA Magic, localhost:18080)
+                    -->        MagicDraw Open API
 ```
 
-- **브릿지 플러그인**: MagicDraw Open API로 모델을 직접 읽고 씁니다. Maven으로 빌드해
-  MagicDraw의 `plugins` 폴더에 배포합니다.
-- **MCP 서버**: `server.py`가 MCP 도구들을 노출하고, `bridge_client.py`가
-  브릿지 플러그인(HTTP)과 통신합니다.
+| Folder | Description |
+|---|---|
+| `310 bridge-plugin/` | Java plugin running inside CATIA Magic. Exposes a local HTTP bridge on `localhost:18080` and reads/writes the model via the MagicDraw Open API. |
+| `320 mcp-server/` | Python MCP server. `server.py` defines the MCP tools; `bridge_client.py` talks to the bridge plugin over HTTP. |
 
-## 동작 전제
+## Requirements
 
-- CATIA Magic(MagicDraw 2026x)이 실행 중일 것
-- 브릿지 플러그인이 설치되어 `localhost:18080`에서 대기 중일 것
+- CATIA Magic 2026x (tested with Cyber Systems Engineer 2026x Refresh1)
+- JDK 11+ and Maven (to build the plugin)
+- Python 3.10+
 
-## MCP 서버 설치
+## 1. Build and install the bridge plugin
+
+1. In `310 bridge-plugin/pom.xml`, set:
+   - `magicdraw.install.dir` — your CATIA Magic install folder
+   - `magicdraw.jar.suffix` — the version suffix of the jars in `<install>/lib`
+     (look at the name of `core-*.jar`, e.g. `2026.1.0-42-b71a9669` for 2026x Refresh1)
+2. Build:
+   ```bash
+   cd "310 bridge-plugin"
+   mvn clean package
+   ```
+3. Copy `plugin.xml`, `target/mcp-bridge-plugin-1.0.0.jar` and `target/json-simple-1.1.1.jar`
+   into `<install>/plugins/com.example.mcpbridge/`.
+4. Restart CATIA Magic. The bridge listens on `http://localhost:18080`.
+
+`deploy-restart.ps1` automates save → close → deploy → restart:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy-restart.ps1 -Deploy -Project "C:\path\to\model.mdzip" -InstallDir "C:\path\to\CATIA Magic"
+```
+
+## 2. Install the MCP server
 
 ```bash
 cd "320 mcp-server"
 pip install -r requirements.txt
 ```
 
-MCP 클라이언트(예: Claude Desktop) 설정은
-`320 mcp-server/claude_desktop_config_example.json`를 참고하세요.
+Register it with your MCP client. For Claude Desktop, see
+`320 mcp-server/claude_desktop_config_example.json`.
 
-## 브릿지 플러그인 빌드
+## MCP tools
 
-```bash
-cd "310 bridge-plugin"
-mvn clean package
-```
+Use `active` as `project_id` to target the currently open project.
 
-빌드 산출물(`plugin.xml`, `target/*.jar`)을 MagicDraw의
-`plugins/com.example.mcpbridge` 폴더에 복사한 뒤 MagicDraw를 재시작합니다.
+| Area | Tools |
+|---|---|
+| Status / projects | `get_status`, `list_projects` |
+| Elements | `list_elements`, `get_element`, `create_element`, `update_element`, `delete_element`, `reorder_attributes` |
+| Stereotypes / profiles | `get_stereotype_properties`, `set_stereotype_property`, `get_profile` |
+| Relations | `create_relation`, `list_relations`, `delete_relation` |
+| Diagrams | `list_diagrams`, `get_diagram`, `create_diagram`, `export_diagram` (PNG) |
+| Diagram symbols | `get_diagram_symbols`, `add_element_to_diagram`, `set_symbol_bounds`, `move_symbols`, `layout_diagram` |
+| Paths / connectors | `add_relation_to_diagram`, `display_all_paths`, `get_diagram_connectors`, `reroute_connectors` |
+| Matrices | `configure_matrix` (Satisfy / Verify / Derive / Refine matrices) |
+
+All tool names are prefixed with `catia_magic_`.
+
+### Notes
+
+- New elements are revealed (expanded and selected) in the containment tree.
+- `add_element_to_diagram` can auto-display ports for blocks and part properties.
+- `display_all_paths` removes duplicate paths; containment links are off by default
+  (`display_containment=true` to show them, e.g. for requirement hierarchies).
+- `export_diagram` writes a PNG to the temp folder and returns its path, so the client can look at the diagram.
+- `reorder_attributes` changes the order of a block's properties/ports (listed IDs go first, the rest keep their order).
+- `layout_diagram`: `smart`/`compact` currently fall back to the standard quick layout (hierarchic).
+
+## License
+
+No license specified yet.

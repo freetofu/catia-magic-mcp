@@ -51,13 +51,21 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, AsyncIterator, Optional
+from typing import Annotated, Any, AsyncIterator, NoReturn, Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from bridge_client import AsyncBridgeClient, BridgeConnectionError, BRIDGE_BASE_URL, TIMEOUT_SECONDS
+from bridge_client import (
+    AsyncBridgeClient,
+    BridgeConnectionError,
+    BridgeHttpError,
+    BridgeTimeoutError,
+    BRIDGE_BASE_URL,
+    TIMEOUT_SECONDS,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lifespan: httpx.AsyncClient 싱글턴 관리
@@ -129,11 +137,21 @@ mcp = FastMCP(
 # 공통 에러 응답 헬퍼
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _error_response(error: Exception) -> dict[str, Any]:
-    """예외를 JSON 호환 에러 dict로 변환."""
+def _fail(error: Exception) -> NoReturn:
+    """예외를 MCP 프로토콜 수준의 '실패'로 올린다.
+
+    이전에는 에러 dict를 return했다. 그러면 FastMCP가 정상 반환값으로 보고
+    isError=false로 직렬화하기 때문에, MagicDraw가 꺼져 있어도 호출한 쪽에서는
+    성공으로 보였다(본문에 error 문자열이 들어있을 뿐). 실패는 실패로 올린다.
+    """
+    if isinstance(error, BridgeTimeoutError):
+        # 연결은 됐다. MagicDraw 설치/실행 상태를 뒤지게 만들면 안 된다.
+        raise ToolError(f"작업이 제한시간을 넘겼습니다(연결 자체는 정상). {error}") from error
     if isinstance(error, BridgeConnectionError):
-        return {"error": "connection_error", "message": str(error)}
-    return {"error": "tool_error", "message": str(error)}
+        raise ToolError(f"Bridge Plugin 연결 실패: {error}") from error
+    if isinstance(error, BridgeHttpError):
+        raise ToolError(f"Bridge Plugin이 오류를 반환했습니다: {error}") from error
+    raise ToolError(f"{type(error).__name__}: {error}") from error
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +188,7 @@ async def catia_magic_get_status() -> dict[str, Any]:
     try:
         return await _get_bridge().get_status()
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +225,7 @@ async def catia_magic_list_projects() -> dict[str, Any]:
     try:
         return await _get_bridge().list_projects()
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +291,7 @@ async def catia_magic_list_elements(
             return await bridge.search_elements(project_id, query)
         return await bridge.list_elements(project_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -318,7 +336,7 @@ async def catia_magic_get_element(
     try:
         return await _get_bridge().get_element(project_id, element_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -397,6 +415,18 @@ async def catia_magic_create_element(
             ),
         ),
     ] = None,
+    metaclasses: Annotated[
+        Optional[list[str]],
+        Field(
+            default=None,
+            description=(
+                "Stereotype 전용 — 이 스테레오타입을 붙일 수 있는 메타클래스 이름 목록. "
+                "예: ['Class'], ['Property', 'Port']. "
+                "프로파일 정의: element_type='Profile' → 'Stereotype'(owner=Profile, metaclasses 지정) → "
+                "태그는 element_type='Property'(owner=Stereotype, type_id=타입 ID)로 생성."
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """프로젝트 내에 새 UML/SysML 요소를 생성합니다.
 
@@ -431,10 +461,10 @@ async def catia_magic_create_element(
     """
     try:
         return await _get_bridge().create_element(
-            project_id, element_type, name, owner_id, stereotype, type_id, aggregation
+            project_id, element_type, name, owner_id, stereotype, type_id, aggregation, metaclasses
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -498,6 +528,16 @@ async def catia_magic_update_element(
             description="Property의 집합 종류 (선택 사항). 'none' | 'shared' | 'composite'.",
         ),
     ] = None,
+    metaclasses: Annotated[
+        Optional[list[str]],
+        Field(
+            default=None,
+            description=(
+                "Stereotype 전용 — 붙일 수 있는 메타클래스 이름 목록 (기존 목록을 교체). "
+                "예: ['Class', 'Port']"
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """기존 요소의 이름, documentation, stereotype, type, aggregation을 수정합니다.
 
@@ -519,10 +559,10 @@ async def catia_magic_update_element(
     """
     try:
         return await _get_bridge().update_element(
-            project_id, element_id, name, documentation, stereotype, type_id, aggregation
+            project_id, element_id, name, documentation, stereotype, type_id, aggregation, metaclasses
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -567,7 +607,7 @@ async def catia_magic_delete_element(
     try:
         return await _get_bridge().delete_element(project_id, element_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,7 +652,7 @@ async def catia_magic_list_diagrams(
     try:
         return await _get_bridge().list_diagrams(project_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -655,7 +695,7 @@ async def catia_magic_get_diagram(
     try:
         return await _get_bridge().get_diagram(project_id, diagram_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -734,7 +774,7 @@ async def catia_magic_create_diagram(
             project_id, diagram_type, name, owner_id
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -804,7 +844,7 @@ async def catia_magic_get_stereotype_properties(
     try:
         return await _get_bridge().get_stereotype_properties(project_id, element_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -836,7 +876,11 @@ async def catia_magic_set_stereotype_property(
     ],
     value: Annotated[
         str,
-        Field(description="설정할 값 (문자열). 숫자·불리언도 문자열로 전달합니다.")
+        Field(description=(
+            "설정할 값 (문자열). 숫자·불리언도 문자열로 전달합니다. "
+            "요소를 가리키는 태그(예: Customization의 customizationTarget)는 요소 ID를, "
+            "여러 개면 쉼표로 구분한 ID 목록을 전달합니다."
+        ))
     ],
 ) -> dict[str, Any]:
     """요소의 스테레오타입 속성값을 변경합니다.
@@ -871,7 +915,57 @@ async def catia_magic_set_stereotype_property(
             project_id, element_id, stereotype, property_name, value
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
+
+
+@mcp.tool(
+    name="catia_magic_get_profile",
+    annotations={
+        "title": "CATIA Magic 프로파일 조회",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def catia_magic_get_profile(
+    project_id: Annotated[
+        str,
+        Field(description="대상 프로젝트 ID (또는 'active')")
+    ],
+    profile_id: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "조회할 Profile ID (선택 사항). 지정하면 그 프로파일의 스테레오타입 상세"
+                "(메타클래스, 상위 스테레오타입, 태그 정의)를 반환합니다. "
+                "생략하면 프로젝트에 로드된 프로파일 목록을 반환합니다."
+            ),
+        ),
+    ] = None,
+    query: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="profile_id 생략 시 프로파일 이름 필터 (대소문자 무시, 부분 일치).",
+        ),
+    ] = None,
+) -> dict[str, Any]:
+    """프로파일 목록 또는 프로파일 내 스테레오타입 정의를 조회합니다.
+
+    Returns:
+        목록: {"profiles": [{"id", "name", "stereotypeCount"}]}
+        상세: {"id", "name", "stereotypes": [{"id", "name", "isAbstract",
+               "metaclasses": [str], "parents": [str],
+               "tags": [{"id", "name", "type", "lower", "upper"}]}]}
+    """
+    try:
+        if profile_id:
+            return await _get_bridge().get_profile(project_id, profile_id)
+        return await _get_bridge().list_profiles(project_id, query)
+    except Exception as e:
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -949,7 +1043,7 @@ async def catia_magic_get_diagram_symbols(
     try:
         return await _get_bridge().get_diagram_symbols(project_id, diagram_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1016,7 +1110,7 @@ async def catia_magic_get_diagram_connectors(
     try:
         return await _get_bridge().get_diagram_connectors(project_id, diagram_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1057,7 +1151,7 @@ async def catia_magic_reroute_connectors(
     try:
         return await _get_bridge().reroute_connectors(project_id, diagram_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1141,7 +1235,7 @@ async def catia_magic_add_element_to_diagram(
             project_id, diagram_id, element_id, x, y, auto_display_ports
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1218,7 +1312,7 @@ async def catia_magic_set_symbol_bounds(
             project_id, diagram_id, symbol_id, x, y, width, height
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1287,16 +1381,18 @@ async def catia_magic_layout_diagram(
     try:
         return await _get_bridge().layout_diagram(project_id, diagram_id, algorithm)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
     name="catia_magic_export_diagram",
     annotations={
         "title": "CATIA Magic 다이어그램 PNG 내보내기",
-        "readOnlyHint": True,
+        # 모델은 안 바꾸지만 다이어그램을 UI에서 열고 PNG 파일을 덮어쓴다.
+        # readOnly로 두면 호출하는 쪽이 부작용 없는 조회로 오해한다.
+        "readOnlyHint": False,
         "destructiveHint": False,
-        "idempotentHint": True,
+        "idempotentHint": False,
         "openWorldHint": False,
     },
 )
@@ -1328,7 +1424,37 @@ async def catia_magic_export_diagram(
     try:
         return await _get_bridge().export_diagram(project_id, diagram_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
+
+
+@mcp.tool(
+    name="catia_magic_reorder_attributes",
+    annotations={
+        "title": "CATIA Magic 속성(Property/Port) 순서 변경",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def catia_magic_reorder_attributes(
+    project_id: Annotated[str, Field(description="대상 프로젝트 ID (또는 'active')")],
+    element_id: Annotated[str, Field(description="속성을 가진 요소 ID (Block/Class/DataType/Interface)")],
+    order: Annotated[
+        list[str],
+        Field(description="원하는 순서의 속성 ID 목록. 나열한 속성이 앞에 이 순서로 오고, 빠진 속성은 기존 순서대로 뒤에 붙는다."),
+    ],
+) -> dict[str, Any]:
+    """요소가 가진 속성(part/value/reference property, port 등)의 순서를 바꿉니다.
+
+    Returns:
+        성공: {"elementId": str, "attributes": [{"id": str, "name": str}, ...]}  (변경 후 전체 순서)
+        실패: {"error": str, "message": str}
+    """
+    try:
+        return await _get_bridge().reorder_attributes(project_id, element_id, order)
+    except Exception as e:
+        _fail(e)
 
 
 @mcp.tool(
@@ -1457,7 +1583,7 @@ async def catia_magic_configure_matrix(
             row_element_types, column_element_types,
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1466,7 +1592,8 @@ async def catia_magic_configure_matrix(
         "title": "CATIA Magic 모든 관계 경로 자동 시각화",
         "readOnlyHint": False,
         "destructiveHint": False,
-        "idempotentHint": True,
+        # 다이어그램에 path 요소를 새로 만든다. 반복 호출이 같은 결과를 주지 않는다.
+        "idempotentHint": False,
         "openWorldHint": False,
     },
 )
@@ -1524,7 +1651,7 @@ async def catia_magic_display_all_paths(
             project_id, diagram_id, display_containment
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1661,7 +1788,7 @@ async def catia_magic_create_relation(
             source_part_id, target_part_id
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1713,7 +1840,7 @@ async def catia_magic_list_relations(
     try:
         return await _get_bridge().list_relations(project_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1763,7 +1890,7 @@ async def catia_magic_delete_relation(
     try:
         return await _get_bridge().delete_relation(project_id, relation_id)
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1840,16 +1967,16 @@ async def catia_magic_add_relation_to_diagram(
         {"id": "_p1", "relationId": "_r1", "clientSymbolId": "_s1", "supplierSymbolId": "_s2"}
     """
     try:
-        body: dict[str, Any] = {"relationId": relation_id, "allowDuplicate": allow_duplicate}
-        if client_symbol_id:
-            body["clientSymbolId"] = client_symbol_id
-        if supplier_symbol_id:
-            body["supplierSymbolId"] = supplier_symbol_id
-        return await _get_bridge()._post(
-            f"/project/{project_id}/diagrams/{diagram_id}/relations", body
+        return await _get_bridge().add_relation_to_diagram(
+            project_id,
+            diagram_id,
+            relation_id,
+            client_symbol_id,
+            supplier_symbol_id,
+            allow_duplicate,
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 @mcp.tool(
@@ -1909,12 +2036,11 @@ async def catia_magic_move_symbols(
         {"moved": [...], "skipped": [], "resized": []}
     """
     try:
-        body: dict[str, Any] = {"symbolIds": symbol_ids, "dx": dx, "dy": dy, "pushAdjacent": push_adjacent}
-        return await _get_bridge()._post(
-            f"/project/{project_id}/diagrams/{diagram_id}/symbols/move", body
+        return await _get_bridge().move_symbols(
+            project_id, diagram_id, symbol_ids, dx, dy, push_adjacent
         )
     except Exception as e:
-        return _error_response(e)
+        _fail(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

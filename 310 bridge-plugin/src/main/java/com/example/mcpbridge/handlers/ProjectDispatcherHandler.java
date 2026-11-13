@@ -27,9 +27,15 @@ import java.io.IOException;
  * POST   /project/{id}/diagrams/{did}/relations       → DiagramSymbolsHandler.addRelationToDiagram
  * POST   /project/{id}/diagrams/{did}/paths/display-all → DiagramSymbolsHandler.displayAllPaths
  * GET    /project/{id}/diagrams/{did}/connectors        → DiagramSymbolsHandler.getConnectors
+ * POST   /project/{id}/diagrams/{did}/connectors/reroute   → DiagramSymbolsHandler.rerouteConnectors
+ * POST   /project/{id}/diagrams/{did}/connectors/waypoints → DiagramSymbolsHandler.setConnectorWaypoints
  * POST   /project/{id}/relation                       → RelationsHandler.handleCreate
  * GET    /project/{id}/relations                      → RelationsHandler.handleList
  * DELETE /project/{id}/relation/{rid}                → RelationsHandler.handleDelete
+ * GET    /project/{id}/profiles[?query=..]            → ProfilesHandler (목록)
+ * GET    /project/{id}/profiles/{pid}                 → ProfilesHandler (스테레오타입 상세)
+ * POST   /project/{id}/save                           → 현재 로컬 프로젝트 저장
+ * POST   /project/{id}/close                          → 저장 후 현재 프로젝트 종료
  */
 public class ProjectDispatcherHandler extends BaseHandler {
 
@@ -39,6 +45,7 @@ public class ProjectDispatcherHandler extends BaseHandler {
     private final StereotypePropertiesHandler  stereotypeHandler  = new StereotypePropertiesHandler();
     private final DiagramSymbolsHandler        symbolsHandler     = new DiagramSymbolsHandler();
     private final MatrixHandler                matrixHandler      = new MatrixHandler();
+    private final ProfilesHandler              profilesHandler    = new ProfilesHandler();
 
     @Override
     public void handle(HttpExchange exchange) throws IOException {
@@ -71,6 +78,9 @@ public class ProjectDispatcherHandler extends BaseHandler {
                 // /elements/{eid}/props  → StereotypePropertiesHandler
                 if (subId != null && "props".equals(subResource)) {
                     stereotypeHandler.handleProps(exchange, project, subId);
+                } else if (subId != null && "reorder".equals(subResource)) {
+                    // /elements/{eid}/reorder → POST 속성 순서 변경
+                    elementsHandler.reorderAttributes(exchange, project, subId);
                 } else if (subId != null) {
                     elementsHandler.handleSingle(exchange, project, subId);
                 } else {
@@ -106,6 +116,9 @@ public class ProjectDispatcherHandler extends BaseHandler {
                     if ("reroute".equals(subSubId)) {
                         // /diagrams/{did}/connectors/reroute → POST 커넥터 경유점 초기화 재라우팅
                         symbolsHandler.handleReroute(exchange, project, subId);
+                    } else if ("waypoints".equals(subSubId)) {
+                        // /diagrams/{did}/connectors/waypoints → POST 선 경로(경유점) 직접 지정
+                        symbolsHandler.handleWaypoints(exchange, project, subId);
                     } else {
                         // /diagrams/{did}/connectors → GET 커넥터(연결선) 조회
                         symbolsHandler.handleConnectors(exchange, project, subId);
@@ -129,6 +142,47 @@ public class ProjectDispatcherHandler extends BaseHandler {
                 } else {
                     relationsHandler.handleCreate(exchange, project);
                 }
+                break;
+            case "profiles": case "profile":
+                profilesHandler.handleProfiles(exchange, project, subId);
+                break;
+            case "save":
+                if (!"POST".equals(exchange.getRequestMethod())) {
+                    sendError(exchange, 405, "Method Not Allowed");
+                    break;
+                }
+                if (project.getLoadedFrom() == null) {
+                    sendError(exchange, 409, "저장 대상 파일 경로가 없는 프로젝트입니다.");
+                    break;
+                }
+                boolean saved = Application.getInstance().getProjectsManager()
+                        .saveProject(project.getLoadedFrom(), false);
+                if (!saved) {
+                    sendError(exchange, 500, "프로젝트 저장에 실패했습니다.");
+                    break;
+                }
+                sendJson(exchange, 200, "{\"projectId\": \"" + escapeJson(project.getID())
+                        + "\", \"status\": \"saved\"}");
+                break;
+            case "close":
+                if (!"POST".equals(exchange.getRequestMethod())) {
+                    sendError(exchange, 405, "Method Not Allowed");
+                    break;
+                }
+                if (project.getLoadedFrom() == null) {
+                    sendError(exchange, 409, "저장 대상 파일 경로가 없는 프로젝트입니다.");
+                    break;
+                }
+                boolean closeSaved = Application.getInstance().getProjectsManager()
+                        .saveProject(project.getLoadedFrom(), false);
+                if (!closeSaved) {
+                    sendError(exchange, 500, "프로젝트 저장에 실패했습니다. 종료하지 않았습니다.");
+                    break;
+                }
+                sendJson(exchange, 202, "{\"projectId\": \"" + escapeJson(project.getID())
+                        + "\", \"status\": \"closing-after-save\"}");
+                javax.swing.SwingUtilities.invokeLater(() -> Application.getInstance()
+                        .getProjectsManager().closeProject(project));
                 break;
             default:
                 sendError(exchange, 404, "알 수 없는 리소스: " + resource);

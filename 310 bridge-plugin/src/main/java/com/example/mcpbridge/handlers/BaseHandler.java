@@ -44,11 +44,49 @@ public abstract class BaseHandler implements HttpHandler {
 
     protected String escapeJson(String s) {
         if (s == null) return "";
-        return s.replace("\\", "\\\\").replace("\"", "\\\"")
-                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+        StringBuilder sb = new StringBuilder(s.length() + 16);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '"':  sb.append("\\\""); break;
+                case '\n': sb.append("\\n");  break;
+                case '\r': sb.append("\\r");  break;
+                case '\t': sb.append("\\t");  break;
+                case '\b': sb.append("\\b");  break;
+                case '\f': sb.append("\\f");  break;
+                default:
+                    // 나머지 제어문자(U+0000~U+001F)를 그대로 흘리면 깨진 JSON이 나가
+                    // 클라이언트 파서가 죽는다. 이 코드베이스는 문자열 연결로 JSON을
+                    // 만들기 때문에 여기가 단일 실패점이다.
+                    if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+                    else sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     // ── 공통 헬퍼 ────────────────────────────────────────────────────────────
+
+    /**
+     * MagicDraw 태그값 조회 API의 반환값을 문자열로 만든다. 여러 값이면 ", "로 잇는다
+     * (set_stereotype_property 의 쉼표 구분 입력과 같은 형식).
+     *
+     * getStereotypePropertyValueAsString / getStereotypePropertyValue 는
+     * 값이 하나여도 List 를 돌려준다. 그대로 toString() 하면 "[REQ-001]" 처럼
+     * 대괄호가 붙고, 비었을 때 "" 대신 "[]" 가 나간다.
+     */
+    protected String valuesOf(Object raw) {
+        if (raw == null) return "";
+        if (raw instanceof java.util.Collection) {
+            StringJoiner sj = new StringJoiner(", ");
+            for (Object v : (java.util.Collection<?>) raw) {
+                if (v != null) sj.add(v.toString());
+            }
+            return sj.toString();
+        }
+        return raw.toString();
+    }
 
     /** BaseElement → Element 캐스팅 헬퍼 (2026x: getElementByID returns BaseElement) */
     protected Element resolveElement(Project project, String id) {
@@ -296,22 +334,19 @@ public abstract class BaseHandler implements HttpHandler {
                             String propValue = "";
                             try {
                                 // 현행 시그니처: getStereotypePropertyValueAsString(Element, Stereotype, String)
+                                //   → 반환형은 List<String> 이다(javap로 2026.1.0 확인).
+                                //   toString() 하면 "[REQ-001]" 처럼 대괄호가 붙고, 값이 없으면 "[]" 가 된다.
                                 Method getVal = thClass.getMethod("getStereotypePropertyValueAsString",
                                     Element.class, stClass, String.class);
                                 Object valObj = getVal.invoke(null, el, st, propName);
-                                if (valObj != null) propValue = valObj.toString();
+                                propValue = valuesOf(valObj);
                             } catch (Exception e) {
                                 // fallback: getStereotypePropertyValue(Element, Stereotype, String) -> Object/List
                                 try {
                                     Method getValRaw = thClass.getMethod("getStereotypePropertyValue",
                                         Element.class, stClass, String.class);
                                     Object raw = getValRaw.invoke(null, el, st, propName);
-                                    if (raw instanceof List) {
-                                        List<?> vl = (List<?>) raw;
-                                        if (!vl.isEmpty() && vl.get(0) != null) propValue = vl.get(0).toString();
-                                    } else if (raw != null) {
-                                        propValue = raw.toString();
-                                    }
+                                    propValue = valuesOf(raw);
                                 } catch (Exception ignore) {}
                             }
 

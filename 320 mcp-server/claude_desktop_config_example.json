@@ -1,30 +1,22 @@
 {
   "_comment": [
-    "Claude Desktop MCP 서버 설정 예시 파일",
+    "Example Claude Desktop MCP server configuration.",
     "",
-    "사용 방법:",
-    "1. 이 파일의 catia_magic_mcp 블록을 Claude Desktop 설정 파일에 추가합니다.",
+    "1. Copy the catia_magic_mcp block into your Claude Desktop config file:",
     "   - Windows: %APPDATA%\\Claude\\claude_desktop_config.json",
     "   - macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json",
+    "2. Set \"command\" to your Python executable (or a virtualenv's python.exe).",
+    "3. Set the path in \"args\" to where server.py lives on your machine.",
+    "4. Restart Claude Desktop.",
     "",
-    "2. python_path를 실제 Python 실행 파일 경로로 수정합니다.",
-    "   예) C:\\Python312\\python.exe  또는  C:\\Users\\skm17\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
-    "   가상환경 사용 시: C:\\venvs\\mcp\\Scripts\\python.exe",
-    "",
-    "3. server_dir를 실제 server.py가 있는 디렉터리로 수정합니다.",
-    "",
-    "4. Claude Desktop을 재시작합니다.",
-    "",
-    "전제 조건:",
-    "  - MagicDraw(CATIA Magic 2026x)가 실행 중이어야 합니다.",
-    "  - MCP Bridge Plugin(localhost:18080)이 활성화되어 있어야 합니다.",
-    "  - pip install -r requirements.txt 로 의존성이 설치되어 있어야 합니다."
+    "Requirements: CATIA Magic is running, the bridge plugin listens on localhost:18080,",
+    "and dependencies are installed (pip install -r requirements.txt)."
   ],
   "mcpServers": {
     "catia_magic_mcp": {
       "command": "C:\\Python312\\python.exe",
       "args": [
-        "C:\\Users\\skm17\\CATIA Magic MCP 개발\\300 개발\\320 mcp-server\\server.py"
+        "C:\\path\\to\\catia-magic-mcp\\320 mcp-server\\server.py"
       ],
       "env": {}
     }

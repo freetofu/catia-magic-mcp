@@ -4,9 +4,12 @@ import com.nomagic.magicdraw.core.Project;
 import com.nomagic.magicdraw.openapi.uml.SessionManager;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
+import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
+import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.IOException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
 import org.json.simple.JSONObject;
@@ -106,11 +109,18 @@ public class StereotypePropertiesHandler extends BaseHandler {
         SessionManager sm = SessionManager.getInstance();
         sm.createSession(project, "MCP: set stereotype property - " + elementId);
         try {
-            Class<?> shClass = Class.forName(STEREOTYPES_HELPER);
-
-            // getStereotype(Project, String) -> Stereotype
-            Method getStereotype = shClass.getMethod("getStereotype", Project.class, String.class);
-            Object stereotype = getStereotype.invoke(null, project, stereotypeName);
+            // 같은 이름 스테레오타입이 여러 프로파일에 있을 수 있다(예: Subsystem ×3).
+            // 프로젝트 전체에서 이름으로 찾으면 엉뚱한 것을 잡고 조용히 아무것도 안 바뀐다
+            // → 요소에 실제 적용된 스테레오타입 중에서 먼저 찾는다.
+            Object stereotype = null;
+            for (Stereotype applied : StereotypesHelper.getStereotypes(el)) {
+                if (stereotypeName.equals(applied.getName())) { stereotype = applied; break; }
+            }
+            if (stereotype == null) {
+                Class<?> shClass = Class.forName(STEREOTYPES_HELPER);
+                Method getStereotype = shClass.getMethod("getStereotype", Project.class, String.class);
+                stereotype = getStereotype.invoke(null, project, stereotypeName);
+            }
 
             if (stereotype == null) {
                 sm.cancelSession(project);
@@ -118,27 +128,14 @@ public class StereotypePropertiesHandler extends BaseHandler {
                 return;
             }
 
-            Class<?> stClass = Class.forName("com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype");
-
-            // Try setStereotypePropertyValue with Project, Element, Stereotype, String, Object
-            try {
-                Method setVal = shClass.getMethod(
-                    "setStereotypePropertyValue",
-                    Project.class, Element.class, stClass, String.class, Object.class);
-                setVal.invoke(null, project, el, stereotype, propertyName, value);
-            } catch (NoSuchMethodException e1) {
-                // Fallback: try setStereotypePropertyValue with Element, Stereotype, String, Object
-                try {
-                    Method setVal = shClass.getMethod(
-                        "setStereotypePropertyValue",
-                        Element.class, stClass, String.class, Object.class);
-                    setVal.invoke(null, el, stereotype, propertyName, value);
-                } catch (NoSuchMethodException e2) {
-                    // Final fallback: try alternate method name or signature
-                    throw new Exception("setStereotypePropertyValue method not found. Tried signatures: " +
-                        "(Project, Element, Stereotype, String, Object) and (Element, Stereotype, String, Object). " +
-                        "Verify MagicDraw StereotypesHelper API for correct method.");
-                }
+            Stereotype st = (Stereotype) stereotype;
+            List<Element> refs = resolveElementRefs(project, value);
+            if (refs == null) {
+                StereotypesHelper.setStereotypePropertyValue(el, st, propertyName, value);
+            } else {
+                // 요소를 가리키는 태그(예: customizationTarget): 첫 값은 교체, 나머지는 추가
+                for (int i = 0; i < refs.size(); i++)
+                    StereotypesHelper.setStereotypePropertyValue(el, st, propertyName, refs.get(i), i > 0);
             }
 
             sm.closeSession(project);
@@ -158,6 +155,20 @@ public class StereotypePropertiesHandler extends BaseHandler {
             sm.cancelSession(project);
             sendError(exchange, 500, "Failed to set stereotype property: " + e.getMessage());
         }
+    }
+
+    /**
+     * 값이 요소 ID(쉼표 구분 가능)이고 전부 실제 요소로 찾아지면 그 요소 목록, 아니면 null(일반 글자 값).
+     * ponytail: 글자 태그에 우연히 요소 ID와 같은 값을 넣으면 요소로 해석된다. 실제로 문제 되면 태그 타입을 확인하도록 바꿀 것.
+     */
+    private List<Element> resolveElementRefs(Project project, String value) {
+        List<Element> out = new ArrayList<>();
+        for (String token : value.split(",")) {
+            Element ref = resolveElement(project, token.trim());
+            if (ref == null) return null;
+            out.add(ref);
+        }
+        return out;
     }
 
 }

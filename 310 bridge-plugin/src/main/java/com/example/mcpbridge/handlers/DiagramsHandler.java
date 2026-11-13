@@ -114,8 +114,16 @@ public class DiagramsHandler extends BaseHandler {
             }
             Method createDiagram = ModelElementsManager.class.getMethod(
                 "createDiagram", String.class, nsClass);
+            String creationType = creationTypeFor(typeName);
             Object created = createDiagram.invoke(
-                ModelElementsManager.getInstance(), resolveDiagramType(typeName), owner);
+                ModelElementsManager.getInstance(), creationType, owner);
+
+            // Custom matrix types are configurator registrations, not model factory
+            // types.  They must be created as a standard Dependency Matrix first,
+            // then assigned to the diagram representation.
+            if (!creationType.equals(typeName)) {
+                applyRepresentationType(created, typeName);
+            }
 
             // 이름 설정 - NamedElement는 직접 참조 가능 (슈퍼클래스 의존성 없음)
             if (created instanceof NamedElement) ((NamedElement) created).setName(name);
@@ -145,6 +153,44 @@ public class DiagramsHandler extends BaseHandler {
     private boolean isDiagramElement(Element el) {
         String ht = el.getHumanType();
         return ht != null && ht.contains("Diagram");
+    }
+
+    // Diagram 요소의 getHumanType()은 UML 메타클래스 이름인 "Diagram"만 돌려준다.
+    // "SysML Internal Block Diagram" 같은 실제 타입은 DiagramType에 들어 있다.
+    // (DiagramPresentationElement와 달리 다이어그램을 열지 않아도 읽힌다.)
+    // Diagram 클래스를 직접 참조하면 컴파일이 깨지므로(위 NOTE 참조) 리플렉션으로 잡는다.
+    private static final Method DIAGRAM_TYPE_OF;
+    private static final Method DIAGRAM_TYPE_GET_TYPE;
+    static {
+        Method of = null, getType = null;
+        try {
+            Class<?> dt = Class.forName("com.nomagic.magicdraw.uml.DiagramType");
+            for (Method m : dt.getMethods()) {
+                if ("getDiagramType".equals(m.getName())
+                        && m.getParameterCount() == 1
+                        && java.lang.reflect.Modifier.isStatic(m.getModifiers())) {
+                    of = m;
+                    break;
+                }
+            }
+            getType = dt.getMethod("getType");
+        } catch (Exception ignored) { /* 폴백으로 humanType을 쓴다 */ }
+        DIAGRAM_TYPE_OF = of;
+        DIAGRAM_TYPE_GET_TYPE = getType;
+    }
+
+    /** 다이어그램의 실제 타입명. 못 구하면 humanType으로 폴백. */
+    private String diagramTypeOf(Element el) {
+        if (DIAGRAM_TYPE_OF != null && DIAGRAM_TYPE_GET_TYPE != null) {
+            try {
+                Object dt = DIAGRAM_TYPE_OF.invoke(null, el);
+                if (dt != null) {
+                    Object t = DIAGRAM_TYPE_GET_TYPE.invoke(dt);
+                    if (t != null && !t.toString().isEmpty()) return t.toString();
+                }
+            } catch (Exception ignored) { /* 폴백 */ }
+        }
+        return el.getHumanType();
     }
 
     /**
@@ -222,10 +268,36 @@ public class DiagramsHandler extends BaseHandler {
         }
     }
 
+    /**
+     * Resolves registered Dependency Matrix configurator types to the factory's
+     * one supported matrix type.  This keeps MCP creation equivalent to choosing
+     * a custom matrix type from the CATIA Magic UI.
+     */
+    private String creationTypeFor(String requestedType) {
+        try {
+            Class<?> configurator = Class.forName(
+                    "com.nomagic.magicdraw.dependencymatrix.configuration.DependencyMatrixConfigurator");
+            Object registered = configurator.getMethod("getRegisteredMatrixTypes").invoke(null);
+            if (registered instanceof java.util.Collection
+                    && ((java.util.Collection<?>) registered).contains(requestedType)) {
+                return DiagramTypeConstants.DEPENDENCY_MATRIX;
+            }
+        } catch (ReflectiveOperationException ignored) {
+            // Not a Dependency Matrix runtime.  Use the normal diagram type path.
+        }
+        return resolveDiagramType(requestedType);
+    }
+
+    private void applyRepresentationType(Object diagram, String type) throws ReflectiveOperationException {
+        Method representationMethod = diagram.getClass().getMethod("get_representation");
+        Object representation = representationMethod.invoke(diagram);
+        representation.getClass().getMethod("setType", String.class).invoke(representation, type);
+    }
+
     private String elementToDiagramJson(Element el) {
         return String.format("{\"id\":\"%s\",\"name\":\"%s\",\"type\":\"%s\"}",
             escapeJson(el.getLocalID()),
             el instanceof NamedElement ? escapeJson(((NamedElement) el).getName()) : "",
-            escapeJson(el.getHumanType()));
+            escapeJson(diagramTypeOf(el)));
     }
 }

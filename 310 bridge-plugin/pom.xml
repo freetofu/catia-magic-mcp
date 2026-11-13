@@ -21,7 +21,15 @@
           CATIA Magic (MagicDraw) 설치 경로를 입력하세요.
           Windows 예시: C:/Program Files/Dassault Systemes/CATIA Magic 2026x
         -->
-        <magicdraw.install.dir>D:/Program Files/Magic Systems of Systems Architect 26x HF1</magicdraw.install.dir>
+        <magicdraw.install.dir>D:/Program Files/Magic Cyber Systems Engineer 2026x Refresh1</magicdraw.install.dir>
+
+        <!--
+          MagicDraw lib/*.jar 파일명에 붙는 버전+빌드 접미사.
+          설치본마다 다르다. lib 폴더에서 core-*.jar 이름을 보고 맞춘다.
+            2026x HF1      → 2026.0.0-99-55fec9c2
+            2026x Refresh1 → 2026.1.0-42-b71a9669
+        -->
+        <magicdraw.jar.suffix>2026.1.0-42-b71a9669</magicdraw.jar.suffix>
     </properties>
 
     <dependencies>
@@ -31,7 +39,7 @@
             <artifactId>core</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/core-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/core-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- MagicDraw UML2 모델 API -->
@@ -40,7 +48,7 @@
             <artifactId>uml2</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.uml2-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.uml2-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- MagicDraw 모델링 API (SessionManager, ModelElementsManager 등) -->
@@ -49,7 +57,7 @@
             <artifactId>modeling</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.modeling-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.modeling-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- EMF Ecore (UML 메타모델 기반) -->
@@ -76,7 +84,7 @@
             <artifactId>ce</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.ce-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.ce-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- Dassault foundation (ModelElementRegistry, ModelElementProject 포함) -->
@@ -85,7 +93,7 @@
             <artifactId>foundation</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/com.dassault_systemes.modeler.foundation-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/com.dassault_systemes.modeler.foundation-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- MagicDraw Core Diagram (DiagramPresentationImplementer 포함) -->
@@ -94,7 +102,7 @@
             <artifactId>core.diagram</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.core.diagram-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.core.diagram-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- common (BaseElement 등 포함) -->
@@ -103,7 +111,7 @@
             <artifactId>common</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/common-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/common-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- JMI 1.0 (javax.jmi.reflect.RefObject — Element/NamedElement 슈퍼인터페이스) -->
@@ -121,7 +129,7 @@
             <artifactId>foundation</artifactId>
             <version>2026x</version>
             <scope>system</scope>
-            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.foundation-2026.0.0-99-55fec9c2.jar</systemPath>
+            <systemPath>${magicdraw.install.dir}/lib/com.nomagic.magicdraw.foundation-${magicdraw.jar.suffix}.jar</systemPath>
         </dependency>
 
         <!-- JSON 파싱 (경량 json-simple) -->

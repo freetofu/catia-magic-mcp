@@ -8,6 +8,8 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Package;
+import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
+import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.IOException;
 import java.lang.reflect.Method;
@@ -44,6 +46,55 @@ public class ElementsHandler extends BaseHandler {
             case "DELETE": deleteElement(exchange, project, elementId); break;
             default:       sendError(exchange, 405, "Method Not Allowed");
         }
+    }
+
+    /**
+     * POST /project/{id}/elements/{eid}/reorder  body: {"order": ["propId", ...]}
+     * 전용 API가 없어서 getOwnedAttribute()(순서 있는 List)에서 빼고 다시 끼워 순서를 바꾼다.
+     * 나열된 속성이 앞에 그 순서대로 오고, 나열 안 된 속성은 기존 상대 순서대로 뒤에 붙는다.
+     */
+    @SuppressWarnings("unchecked")
+    public void reorderAttributes(HttpExchange exchange, Project project, String elementId) throws IOException {
+        if (!"POST".equals(exchange.getRequestMethod())) { sendError(exchange, 405, "Method Not Allowed"); return; }
+        Element owner = resolveElement(project, elementId);
+        if (owner == null) { sendError(exchange, 404, "Element not found: " + elementId); return; }
+
+        java.util.List<Object> ids;
+        try { ids = (java.util.List<Object>) ((JSONObject) new JSONParser().parse(readRequestBody(exchange))).get("order"); }
+        catch (Exception e) { sendError(exchange, 400, "Invalid JSON: " + e.getMessage()); return; }
+        if (ids == null || ids.isEmpty()) { sendError(exchange, 400, "order (property ID list) is required."); return; }
+
+        java.util.List<Element> attrs;
+        try { attrs = (java.util.List<Element>) owner.getClass().getMethod("getOwnedAttribute").invoke(owner); }
+        catch (Exception e) { sendError(exchange, 400, "Element has no ordered attributes (Block/Class/DataType/Interface only)."); return; }
+
+        java.util.List<Element> wanted = new java.util.ArrayList<>();
+        for (Object id : ids) {
+            Element p = resolveElement(project, String.valueOf(id));
+            if (p == null || !attrs.contains(p)) { sendError(exchange, 400, "Not an attribute of this element: " + id); return; }
+            if (!wanted.contains(p)) wanted.add(p);
+        }
+
+        final String[] err = {null};
+        try {
+            javax.swing.SwingUtilities.invokeAndWait(() -> {
+                SessionManager sm = SessionManager.getInstance();
+                sm.createSession(project, "MCP: reorder attributes");
+                try {
+                    for (int i = 0; i < wanted.size(); i++) {
+                        attrs.remove(wanted.get(i));
+                        attrs.add(i, wanted.get(i));
+                    }
+                    sm.closeSession(project);
+                } catch (Exception e) { sm.cancelSession(project); err[0] = String.valueOf(e.getMessage()); }
+            });
+        } catch (Exception e) { err[0] = String.valueOf(e.getMessage()); }
+        if (err[0] != null) { sendError(exchange, 500, "Reorder failed: " + err[0]); return; }
+
+        StringJoiner out = new StringJoiner(",", "[", "]");
+        for (Element p : attrs) out.add(String.format("{\"id\":\"%s\",\"name\":\"%s\"}",
+            escapeJson(p.getID()), p instanceof NamedElement ? escapeJson(((NamedElement) p).getName()) : ""));
+        sendJson(exchange, 200, "{\"elementId\":\"" + escapeJson(elementId) + "\",\"attributes\":" + out + "}");
     }
 
     private void listElements(HttpExchange exchange, Project project) throws IOException {
@@ -131,6 +182,7 @@ public class ElementsHandler extends BaseHandler {
             if (stereotype != null && !stereotype.isEmpty()) applyStereotype(project, newEl, stereotype);
             // typeId / aggregation 적용 (선택적 — Part Property, Port 타입 설정 등)
             applyTypedProperties(project, newEl, typeId, aggregation);
+            applyMetaclasses(project, newEl, json.get("metaclasses"));
             sm.closeSession(project);
             revealInContainmentTree(project, newEl);  // 생성 직후 모델 탐색기에서 바로 보이도록 트리 펼치기
             sendJson(exchange, 201, "{\"id\":\"" + escapeJson(newEl.getLocalID()) + "\",\"name\":\"" + escapeJson(name) + "\",\"type\":\"" + escapeJson(newEl.getHumanType()) + "\",\"stereotype\":\"" + escapeJson(stereotype != null ? stereotype : "") + "\"}");
@@ -160,6 +212,7 @@ public class ElementsHandler extends BaseHandler {
             String typeId      = (String) json.get("typeId");
             String aggregation = (String) json.get("aggregation");
             applyTypedProperties(project, el, typeId, aggregation);
+            applyMetaclasses(project, el, json.get("metaclasses"));
             sm.closeSession(project);
             sendJson(exchange, 200, elementToJsonDetailed(project, el));
         } catch (Exception e) { sm.cancelSession(project); sendError(exchange, 500, "요소 수정 실패: " + e.getMessage()); }
@@ -231,6 +284,19 @@ public class ElementsHandler extends BaseHandler {
      * 대신 ElementsFactory.createXxxInstance() 리플렉션 호출 + addElement() 패턴 사용.
      * 타입명 예) "Class" → factory.createClassInstance()
      */
+    /** Stereotype이 붙을 수 있는 메타클래스 지정 (예: ["Class","Port"]). 기존 목록을 교체한다. */
+    @SuppressWarnings("unchecked")
+    private void applyMetaclasses(Project project, Element el, Object raw) throws Exception {
+        if (raw == null) return;
+        if (!(el instanceof Stereotype)) throw new Exception("metaclasses는 Stereotype에만 지정할 수 있습니다.");
+        java.util.List<String> names = (java.util.List<String>) raw;
+        for (String n : names) {
+            if (StereotypesHelper.getMetaClassByName(project, n) == null)
+                throw new Exception("메타클래스를 찾을 수 없습니다: " + n);
+        }
+        StereotypesHelper.setBaseClassesByName((Stereotype) el, names);
+    }
+
     private Element createElementByType(Project project, String typeName) throws Exception {
         Object factory = project.getElementsFactory();
         String methodName = "create" + typeName + "Instance";

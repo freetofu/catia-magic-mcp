@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -151,6 +152,13 @@ public class DiagramSymbolsHandler extends BaseHandler {
             sendError(exchange, 405, "Method Not Allowed"); return;
         }
         rerouteConnectors(exchange, project, diagramId);
+    }
+
+    public void handleWaypoints(HttpExchange exchange, Project project, String diagramId) throws IOException {
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            sendError(exchange, 405, "Method Not Allowed"); return;
+        }
+        setConnectorWaypoints(exchange, project, diagramId);
     }
 
     // -------------------------------------------------------------------------
@@ -369,6 +377,155 @@ public class DiagramSymbolsHandler extends BaseHandler {
             } catch (Exception ignore) {}
         }
         return false;
+    }
+
+    // -------------------------------------------------------------------------
+    // POST /diagrams/{did}/connectors/waypoints
+    //   레이아웃 엔진(ELK)이 계산한 선 경로를 그대로 심는다.
+    //   Magic의 자동 라우팅은 블록을 피해 가지 않는다. 그래서 지금까지는 블록 간격을
+    //   넓혀서 선이 지나갈 자리를 비워 두는 식으로 관통을 막았고, 그만큼 프레임이
+    //   옆으로 퍼졌다. 경로를 직접 지정하면 간격을 좁혀도 관통이 생기지 않는다.
+    //
+    //   Body: {"routes":[{"id":"<path 심볼 id>","points":[{"x":..,"y":..}, ...]}],
+    //          "dropEndpoints": false}
+    //
+    //   dropEndpoints=true  → changePathBreakPoints(선, 경유점).
+    //     첫 점과 끝 점을 버리고 가운데만 심는다. 끝점은 Magic이 포트 기준으로 잡는다.
+    //     2026-07-28 실측 결과 이 방식은 손실이 크다. 경유점 52개를 심으면 29개만 남고,
+    //     Magic이 포트에 붙는 양 끝 구간을 다시 계산하면서 그 근처 경유점을 버린다.
+    //     그래서 엔진 기준 관통 0인 경로가 화면에서는 6건 관통으로 나왔다.
+    //
+    //   dropEndpoints=false → changePathPoints(선, 시작점, 끝점, 경유점).  기본값.
+    //     끝점까지 명시해 Magic이 양 끝을 다시 계산할 이유를 없앤다.
+    //
+    //   되돌리기: /connectors/reroute 를 한 번 부르면 경유점이 전부 지워진다.
+    // -------------------------------------------------------------------------
+    @SuppressWarnings("unchecked")
+    private void setConnectorWaypoints(HttpExchange exchange, Project project, String diagramId) throws IOException {
+        JSONObject json;
+        try { json = (JSONObject) new JSONParser().parse(readRequestBody(exchange)); }
+        catch (Exception e) { sendError(exchange, 400, "Invalid JSON: " + e.getMessage()); return; }
+
+        JSONArray routesJson = (JSONArray) json.get("routes");
+        if (routesJson == null || routesJson.isEmpty()) {
+            sendError(exchange, 400, "routes must be a non-empty array"); return;
+        }
+        boolean dropEndpoints = Boolean.TRUE.equals(json.get("dropEndpoints"));
+
+        Object diagram = findDiagram(project, diagramId);
+        if (diagram == null) { sendError(exchange, 404, "DIAGRAM_NOT_FOUND: " + diagramId); return; }
+        openDpe(diagram);
+
+        // path 심볼 id → PathElement. getConnectors 가 돌려주는 id 와 같은 체계다.
+        Map<String, Object> pathById = new HashMap<>();
+        java.util.List<Object> paths = new ArrayList<>();
+        collectPathSymbols(diagram, paths,
+            java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+        for (Object pe : paths) {
+            String pid = getLocalId(pe);
+            if (!pid.isEmpty()) pathById.put(pid, pe);
+        }
+
+        // JSON 파싱은 EDT 밖에서 끝낸다. EDT 안에서는 심볼 변경만 한다.
+        java.util.List<String> ids = new ArrayList<>();
+        java.util.List<java.util.List<Point>> pointLists = new ArrayList<>();
+        StringJoiner skippedJson = new StringJoiner(",", "[", "]");
+        for (Object ro : routesJson) {
+            JSONObject r = (JSONObject) ro;
+            String rid = (r.get("id") == null) ? null : r.get("id").toString();
+            JSONArray ptsJson = (JSONArray) r.get("points");
+            if (rid == null || ptsJson == null) {
+                skippedJson.add(String.format("{\"id\":\"%s\",\"reason\":\"id and points are required\"}",
+                    escapeJson(rid == null ? "" : rid)));
+                continue;
+            }
+            if (!pathById.containsKey(rid)) {
+                skippedJson.add(String.format("{\"id\":\"%s\",\"reason\":\"path symbol not found\"}",
+                    escapeJson(rid)));
+                continue;
+            }
+            java.util.List<Point> pts = new ArrayList<>();
+            for (Object po : ptsJson) {
+                JSONObject p = (JSONObject) po;
+                Number px = (Number) p.get("x");
+                Number py = (Number) p.get("y");
+                if (px == null || py == null) continue;
+                pts.add(new Point(px.intValue(), py.intValue()));
+            }
+            // 여기서는 자르지 않는다. 끝점을 쓸지 말지는 아래에서 방식에 따라 정한다.
+            ids.add(rid);
+            pointLists.add(pts);
+        }
+
+        if (ids.isEmpty()) {
+            sendJson(exchange, 200, String.format(
+                "{\"diagramId\":\"%s\",\"total\":%d,\"applied\":0,\"failed\":0,\"skipped\":%s}",
+                escapeJson(diagramId), routesJson.size(), skippedJson));
+            return;
+        }
+
+        // 심볼 변경은 EDT에서. moveSymbols 와 같은 이유 — 화면을 그리는 도중에 좌표가
+        // 바뀌면 예외가 나거나 화면이 깨진다.
+        final StringJoiner appliedJson = new StringJoiner(",", "[", "]");
+        final int[] counts = {0, 0};   // [0]=applied, [1]=failed
+        final Throwable[] err = {null};
+        Runnable task = () -> {
+            SessionManager sm = SessionManager.getInstance();
+            sm.createSession(project, "MCP: set connector waypoints - " + diagramId);
+            try {
+                Class<?> pemClass = Class.forName(PEM_CLASS);
+                Object pem = pemClass.getMethod("getInstance").invoke(null);
+                Class<?> pathClass = Class.forName("com.nomagic.magicdraw.uml.symbols.paths.PathElement");
+                Method changeBreakPoints = pemClass.getMethod(
+                    "changePathBreakPoints", pathClass, java.util.List.class);
+                Method changePathPoints = pemClass.getMethod(
+                    "changePathPoints", pathClass, Point.class, Point.class, java.util.List.class);
+
+                for (int i = 0; i < ids.size(); i++) {
+                    String rid = ids.get(i);
+                    java.util.List<Point> pts = pointLists.get(i);
+                    Object pe = pathById.get(rid);
+                    // 가운데(경유점)와 양 끝을 나눈다. 점이 2개 이하면 경유점은 없다.
+                    java.util.List<Point> bends = (pts.size() > 2)
+                        ? new ArrayList<>(pts.subList(1, pts.size() - 1))
+                        : new ArrayList<Point>();
+                    try {
+                        if (dropEndpoints || pts.size() < 2) {
+                            changeBreakPoints.invoke(pem, pe, bends);
+                        } else {
+                            changePathPoints.invoke(pem, pe,
+                                pts.get(0), pts.get(pts.size() - 1), bends);
+                        }
+                        counts[0]++;
+                        appliedJson.add(String.format("{\"id\":\"%s\",\"waypoints\":%d}",
+                            escapeJson(rid), bends.size()));
+                    } catch (Exception one) {
+                        counts[1]++;
+                        Throwable c = (one instanceof java.lang.reflect.InvocationTargetException
+                            && one.getCause() != null) ? one.getCause() : one;
+                        System.err.println("[Waypoints] " + rid + " failed: " + c.getMessage());
+                    }
+                }
+                sm.closeSession(project);
+            } catch (Throwable t) {
+                try { sm.cancelSession(project); } catch (Exception ignore) {}
+                err[0] = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                    ? t.getCause() : t;
+            }
+        };
+
+        try {
+            if (javax.swing.SwingUtilities.isEventDispatchThread()) task.run();
+            else javax.swing.SwingUtilities.invokeAndWait(task);
+        } catch (Exception e) {
+            sendError(exchange, 500, "setConnectorWaypoints failed (EDT): " + e.getMessage()); return;
+        }
+        if (err[0] != null) {
+            sendError(exchange, 500, "setConnectorWaypoints failed: " + err[0].getMessage()); return;
+        }
+        sendJson(exchange, 200, String.format(
+            "{\"diagramId\":\"%s\",\"total\":%d,\"applied\":%d,\"failed\":%d,\"routes\":%s,\"skipped\":%s}",
+            escapeJson(diagramId), routesJson.size(), counts[0], counts[1], appliedJson, skippedJson));
     }
 
     /** PathElement(커넥터)만 재귀 수집. getClient() 보유 여부로 path 판별. */
@@ -927,8 +1084,7 @@ public class DiagramSymbolsHandler extends BaseHandler {
         if (!Boolean.TRUE.equals(allowDuplicate)) {
             Object existingPath = findExistingPath(diagram, relationId);
             if (existingPath != null) {
-                String pathId = "";
-                try { pathId = existingPath.getClass().getMethod("getLocalID").invoke(existingPath).toString(); } catch (Exception ignore) {}
+                String pathId = getLocalId(existingPath);
                 sendError(exchange, 409, "ALREADY_VISUALIZED: relation is already shown in diagram. existingPathId=" + pathId
                     + ". Set allowDuplicate=true to force.");
                 return;
@@ -950,8 +1106,7 @@ public class DiagramSymbolsHandler extends BaseHandler {
             Object path = createPath.invoke(pem, relation, clientSymbol, supplierSymbol);
             sm.closeSession(project);
 
-            String pathId = "";
-            try { pathId = path.getClass().getMethod("getLocalID").invoke(path).toString(); } catch (Exception ignore) {}
+            String pathId = getLocalId(path);
             sendJson(exchange, 201, String.format(
                 "{\"id\":\"%s\",\"relationId\":\"%s\",\"clientSymbolId\":\"%s\",\"supplierSymbolId\":\"%s\"}",
                 escapeJson(pathId), escapeJson(relationId),
@@ -1137,6 +1292,11 @@ public class DiagramSymbolsHandler extends BaseHandler {
         // pushAdjacent: 부모 심볼 확장 시 인접 심볼을 자동으로 밀어낼지 여부.
         // 기본값 false — 명시적으로 true를 전달할 때만 인접 심볼 이동.
         boolean pushAdjacent = Boolean.TRUE.equals(json.get("pushAdjacent"));
+        // expandParent: 자식이 부모 밖으로 나가면 부모를 늘릴지 여부. 기본값 true(기존 동작).
+        // 포트를 옮길 때는 false로 줘야 한다. 포트는 원래 테두리에 걸쳐 밖으로 나가 있는
+        // 것이 정상인데, 그걸 '삐져나왔다'고 보고 블록을 늘리면 블록이 커진다. 그러면
+        // 레이아웃 엔진이 선이 지나가라고 비워 둔 자리를 블록이 먹어 선이 관통한다.
+        boolean expandParent = !Boolean.FALSE.equals(json.get("expandParent"));
         if (symbolIdsJson == null || symbolIdsJson.isEmpty()) { sendError(exchange, 400, "symbolIds must be non-empty array"); return; }
         if (dxNum == null || dyNum == null) { sendError(exchange, 400, "dx and dy are required"); return; }
 
@@ -1158,33 +1318,35 @@ public class DiagramSymbolsHandler extends BaseHandler {
         StringJoiner skippedJson = new StringJoiner(",", "[", "]");
         StringJoiner resizedJson = new StringJoiner(",", "[", "]");
 
-        // --- Conflict 1 해결: 부모가 포함된 경우 자식 자동 제외 ---
-        Set<String> parentIds = new HashSet<>();
-        for (String sid : requestedIds) {
-            Object sym = allSymbols.get(sid);
-            if (sym == null) continue;
-            // 이 심볼이 다른 요청 심볼의 부모인지 확인
-            for (String otherId : requestedIds) {
-                if (sid.equals(otherId)) continue;
-                Object other = allSymbols.get(otherId);
-                if (other != null && isChildOf(other, sym)) {
-                    parentIds.add(sid);
-                    break;
-                }
-            }
-        }
-        Set<String> effectiveIds = new HashSet<>();
+        // --- 조상이 함께 요청된 심볼은 제외 ---
+        // 부모가 움직이면 자식은 따라 움직인다. 자식까지 또 옮기면 두 배로 밀린다.
+        // 직계 부모만 보면 A(블록)→B(파트)→C(포트)에서 A와 C만 요청했을 때 C가 안 걸러진다.
+        // IBD의 중첩 파트 구조에서는 이 형태가 일반적이라 조상 체인 전체를 본다.
+        Set<String> requestedIdSet = new HashSet<>(requestedIds);
+        Set<String> effectiveIds = new LinkedHashSet<>();
         for (String sid : requestedIds) {
             Object sym = allSymbols.get(sid);
             if (sym == null) { skippedJson.add(String.format("{\"symbolId\":\"%s\",\"reason\":\"not found\"}", escapeJson(sid))); continue; }
-            String parentId = getParentSymbolId(sym, diagram);
-            if (parentId != null && parentIds.contains(parentId)) {
-                skippedJson.add(String.format("{\"symbolId\":\"%s\",\"reason\":\"auto-excluded: parent also in move list\"}", escapeJson(sid)));
+            String ancestorId = findRequestedAncestor(sym, diagram, allSymbols, requestedIdSet);
+            if (ancestorId != null) {
+                skippedJson.add(String.format(
+                    "{\"symbolId\":\"%s\",\"reason\":\"auto-excluded: ancestor %s also in move list\"}",
+                    escapeJson(sid), escapeJson(ancestorId)));
             } else {
                 effectiveIds.add(sid);
             }
         }
 
+        // 심볼 변경은 EDT(화면 갱신 스레드)에서 해야 한다. HTTP 워커 스레드에서 바로 고치면
+        // MagicDraw가 화면을 그리는 도중에 좌표가 바뀌어 예외가 나거나 화면이 깨진다.
+        // (이 파일의 displayAllPaths 주석에 같은 이유가 이미 적혀 있는데, 정작 최종 출고
+        //  경로인 여기서는 안 지키고 있었다.)
+        final Object diagramF = diagram;
+        final int dxF = dx, dyF = dy;
+        final boolean pushAdjacentF = pushAdjacent;
+        final boolean expandParentF = expandParent;
+        final Throwable[] err = {null};
+        Runnable task = () -> {
         SessionManager sm = SessionManager.getInstance();
         sm.createSession(project, "MCP: move symbols - " + diagramId);
         try {
@@ -1205,20 +1367,27 @@ public class DiagramSymbolsHandler extends BaseHandler {
                 Rectangle bounds = getSymbolBounds(sym);
                 if (bounds == null) { skippedJson.add(String.format("{\"symbolId\":\"%s\",\"reason\":\"cannot get bounds\"}", escapeJson(sid))); continue; }
 
-                int newX = bounds.x + dx;
-                int newY = bounds.y + dy;
+                int newX = bounds.x + dxF;
+                int newY = bounds.y + dyF;
 
                 movePE.invoke(pem, sym, new Point(newX, newY));
-                movedJson.add(String.format("{\"symbolId\":\"%s\",\"x\":%d,\"y\":%d}", escapeJson(sid), newX, newY));
+
+                // 요청 좌표가 아니라 실제 반영된 좌표를 돌려준다.
+                // MagicDraw가 부모 경계로 보정하는 경우가 있어, 요청값을 그대로 응답하면
+                // 호출한 쪽이 실제와 다른 좌표를 기준으로 다음 계산을 하게 된다.
+                Rectangle after = getSymbolBounds(sym);
+                int actualX = (after != null) ? after.x : newX;
+                int actualY = (after != null) ? after.y : newY;
+                movedJson.add(String.format("{\"symbolId\":\"%s\",\"x\":%d,\"y\":%d}", escapeJson(sid), actualX, actualY));
 
                 // 부모가 있으면 부모 확장 필요 여부 계산
-                Object parentSym = getParentSymbol(sym, diagram, allSymbols);
+                Object parentSym = expandParentF ? getParentSymbol(sym, diagramF, allSymbols) : null;
                 if (parentSym != null) {
                     String parentId = getLocalId(parentSym);
                     Rectangle parentBounds = parentNewBounds.getOrDefault(parentId, getSymbolBounds(parentSym));
                     if (parentBounds != null) {
-                        int requiredRight  = newX + bounds.width  + PADDING;
-                        int requiredBottom = newY + bounds.height + PADDING;
+                        int requiredRight  = actualX + bounds.width  + PADDING;
+                        int requiredBottom = actualY + bounds.height + PADDING;
                         int newW = Math.max(parentBounds.width,  requiredRight  - parentBounds.x);
                         int newH = Math.max(parentBounds.height, requiredBottom - parentBounds.y);
                         if (newW != parentBounds.width || newH != parentBounds.height) {
@@ -1240,8 +1409,8 @@ public class DiagramSymbolsHandler extends BaseHandler {
                         escapeJson(entry.getKey()), nb.width, nb.height));
 
                     // pushAdjacent=true 일 때만 인접 심볼 밀어내기
-                    if (pushAdjacent) {
-                        pushAdjacentSymbols(pem, movePE, peClass, diagram, parentSym, nb, allSymbols, effectiveIds, PADDING, movedJson);
+                    if (pushAdjacentF) {
+                        pushAdjacentSymbols(pem, movePE, peClass, diagramF, parentSym, nb, allSymbols, effectiveIds, PADDING, movedJson);
                     }
                 } catch (Exception e) {
                     System.err.println("[MoveSymbols] reshape parent failed: " + e.getMessage());
@@ -1249,14 +1418,27 @@ public class DiagramSymbolsHandler extends BaseHandler {
             }
 
             sm.closeSession(project);
-            sendJson(exchange, 200, String.format(
-                "{\"moved\":%s,\"skipped\":%s,\"resized\":%s}",
-                movedJson, skippedJson, resizedJson));
-
-        } catch (Exception e) {
-            sm.cancelSession(project);
-            sendError(exchange, 500, "moveSymbols failed: " + e.getMessage());
+        } catch (Throwable t) {
+            try { sm.cancelSession(project); } catch (Exception ignore) {}
+            err[0] = (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null)
+                ? t.getCause() : t;
         }
+        };
+
+        try {
+            if (javax.swing.SwingUtilities.isEventDispatchThread()) task.run();
+            else javax.swing.SwingUtilities.invokeAndWait(task);
+        } catch (Exception e) {
+            sendError(exchange, 500, "moveSymbols failed (EDT): " + e.getMessage()); return;
+        }
+        if (err[0] != null) {
+            sendError(exchange, 500, "moveSymbols failed: " + err[0].getMessage()); return;
+        }
+        // 응답은 세션이 닫힌 뒤에 보낸다. 같은 try 안에 두면 클라이언트가 끊겼을 때
+        // 이미 닫힌 세션을 취소하려다 다른 예외가 겹친다.
+        sendJson(exchange, 200, String.format(
+            "{\"moved\":%s,\"skipped\":%s,\"resized\":%s}",
+            movedJson, skippedJson, resizedJson));
     }
 
     // -------------------------------------------------------------------------
@@ -1369,12 +1551,9 @@ public class DiagramSymbolsHandler extends BaseHandler {
 
     private String presentationToJson(Object pe) {
         try {
-            String peId = "";
-            try {
-                Method getId = pe.getClass().getMethod("getLocalID");
-                Object idObj = getId.invoke(pe);
-                if (idObj != null) peId = idObj.toString();
-            } catch (Exception ignore) {}
+            // 심볼(PresentationElement)에는 getLocalID()가 없다 — getID()만 있다.
+            // 직접 리플렉션으로 getLocalID를 부르면 매번 실패해 id가 빈 문자열로 나갔다.
+            String peId = getLocalId(pe);
 
             String elementId = "";
             String elementName = "";
@@ -1571,11 +1750,18 @@ public class DiagramSymbolsHandler extends BaseHandler {
 
     /** 다이어그램 내 모든 심볼을 id → 객체 맵으로 수집 (중첩 재귀) */
     private void collectAllSymbols(Object parent, Map<String, Object> map) {
+        // visited 가드 없이 돌면 심볼 트리에 순환이 있을 때 StackOverflowError로 죽는다.
+        // 이 함수는 moveSymbols(최종 출고 경로)와 findSymbolById가 쓴다.
+        collectAllSymbolsRec(parent, map, java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+    }
+
+    private void collectAllSymbolsRec(Object parent, Map<String, Object> map, java.util.Set<Object> visited) {
+        if (parent == null || !visited.add(parent)) return;
         try {
             for (Object pe : getPresentationElements(parent)) {
                 String sid = getLocalId(pe);
                 if (!sid.isEmpty()) map.put(sid, pe);
-                collectAllSymbols(pe, map);
+                collectAllSymbolsRec(pe, map, visited);
             }
         } catch (Exception ignore) {}
     }
@@ -1597,13 +1783,22 @@ public class DiagramSymbolsHandler extends BaseHandler {
         return pid != null ? allSymbols.get(pid) : null;
     }
 
-    /** 심볼 A가 심볼 B의 자식인지 확인 */
-    private boolean isChildOf(Object child, Object parent) {
-        try {
-            Method getParent = child.getClass().getMethod("getParent");
-            Object p = getParent.invoke(child);
-            return p != null && p == parent;
-        } catch (Exception e) { return false; }
+    /**
+     * 이 심볼의 조상 중에 이동 요청 목록에 든 것이 있으면 그 ID를 반환한다(없으면 null).
+     *
+     * 직계 부모만 보면 손자가 걸러지지 않는다. IBD는 블록→파트→포트처럼
+     * 2단계 이상 중첩이 기본이라 조상 체인을 끝까지 따라간다.
+     */
+    private String findRequestedAncestor(Object sym, Object diagram,
+                                         Map<String, Object> allSymbols, Set<String> requestedIds) {
+        java.util.Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        Object cur = getParentSymbol(sym, diagram, allSymbols);
+        while (cur != null && seen.add(cur)) {
+            String id = getLocalId(cur);
+            if (!id.isEmpty() && requestedIds.contains(id)) return id;
+            cur = getParentSymbol(cur, diagram, allSymbols);
+        }
+        return null;
     }
 
     /** 심볼의 bounds 반환 */
