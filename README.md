@@ -85,4 +85,7 @@ All tool names are prefixed with `catia_magic_`.
 
 ## License
 
-No license specified yet.
+[MIT](LICENSE)
+
+CATIA Magic / MagicDraw is a product of Dassault Systèmes. This project is not affiliated with
+Dassault Systèmes, and no MagicDraw libraries are included in this repository.
