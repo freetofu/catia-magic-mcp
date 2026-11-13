@@ -4,6 +4,9 @@ import com.nomagic.magicdraw.core.Project;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.magicdraw.uml.BaseElement;
+import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
+import com.nomagic.uml2.ext.magicdraw.mdprofiles.Profile;
+import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 
@@ -121,14 +124,66 @@ public abstract class BaseHandler implements HttpHandler {
     }
 
     /**
-     * 스테레오타입 적용 공통 구현.
-     * StereotypesHelper API를 4단계 순서로 시도한다.
+     * 스테레오타입을 적용하고 실제로 붙은 것을 "프로파일::이름"으로 돌려준다.
+     * "TestProfile::Subsystem"처럼 프로파일을 지정하면 그 프로파일에서만 찾는다
+     * (같은 이름이 여러 프로파일에 있을 때 엉뚱한 것이 붙는 것을 막음).
+     * 적용되지 않았으면 예외를 던진다 — 예전처럼 조용히 넘어가지 않는다.
+     */
+    protected String applyStereotype(Project project, Element el, String stereotypeName) {
+        if (stereotypeName.contains("::")) {
+            Stereotype st = findQualifiedStereotype(project, stereotypeName);
+            if (st == null) throw new IllegalArgumentException("스테레오타입을 찾을 수 없습니다: " + stereotypeName);
+            StereotypesHelper.addStereotype(el, st);
+            return stereotypeLabel(st);
+        }
+        applyStereotypeByName(project, el, stereotypeName);
+        for (Stereotype st : StereotypesHelper.getStereotypes(el)) {
+            if (stereotypeName.equalsIgnoreCase(st.getName())) return stereotypeLabel(st);
+        }
+        throw new IllegalStateException("스테레오타입 적용 실패: " + stereotypeName);
+    }
+
+    /** 글자 값을 타입에 맞게 변환: 열거형 → 리터럴(이름으로 찾음), Integer/Real/Boolean → 숫자/참거짓, 그 외 → 그대로. */
+    protected Object convertForType(com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Type t, String s) throws Exception {
+        if (t instanceof com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Enumeration) {
+            for (com.nomagic.uml2.ext.magicdraw.classes.mdkernel.EnumerationLiteral lit
+                    : ((com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Enumeration) t).getOwnedLiteral())
+                if (s.equals(lit.getName())) return lit;
+            throw new Exception("열거형 " + t.getName() + "에 리터럴이 없습니다: " + s);
+        }
+        String tn = t != null ? String.valueOf(t.getName()) : "";
+        try {
+            switch (tn) {
+                case "Integer": return Integer.valueOf(s.trim());
+                case "Real":    return Double.valueOf(s.trim());
+                case "Boolean": return Boolean.valueOf(s.trim());
+                default:        return s;
+            }
+        } catch (NumberFormatException e) {
+            throw new Exception(tn + " 타입에 맞지 않는 값입니다: " + s);
+        }
+    }
+
+    /** "Profile::Stereotype" → 그 프로파일의 스테레오타입. 없으면 null. */
+    protected Stereotype findQualifiedStereotype(Project project, String qualified) {
+        int i = qualified.lastIndexOf("::");
+        Profile p = StereotypesHelper.getProfile(project, qualified.substring(0, i).trim());
+        return p == null ? null : StereotypesHelper.getStereotype(project, qualified.substring(i + 2).trim(), p);
+    }
+
+    protected String stereotypeLabel(Stereotype st) {
+        Profile p = st.getProfile();
+        return (p != null ? p.getName() + "::" : "") + st.getName();
+    }
+
+    /**
+     * 이름만으로 적용. StereotypesHelper API를 4단계 순서로 시도한다.
      *   1) addStereotypeByString(Element, String)
      *   2) addStereotypeByString(Element, String, profileName) — SysML/UML Standard Profile
      *   3) getStereotype(Project, String) + addStereotype(Element, Stereotype)
      *   4) getStereotype(Project, String, profileName) + addStereotype
      */
-    protected void applyStereotype(Project project, Element el, String stereotypeName) {
+    private void applyStereotypeByName(Project project, Element el, String stereotypeName) {
         try {
             Class<?> shClass = Class.forName("com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper");
             Class<?> stClass = Class.forName("com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype");

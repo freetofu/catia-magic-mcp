@@ -388,6 +388,8 @@ async def catia_magic_create_element(
                 "적용할 스테레오타입 이름 (선택 사항). "
                 "예: 'Block', 'Requirement', 'ValueType', 'Interface'. "
                 "SysML 프로파일 또는 UML Standard Profile에서 탐색합니다. "
+                "같은 이름이 여러 프로파일에 있으면 'TestProfile::Subsystem'처럼 '프로파일::이름'으로 지정하세요 "
+                "(응답의 stereotype에 실제로 붙은 '프로파일::이름'이 나옵니다). "
                 "Port는 기본값으로 'ProxyPort'(SysML)가 적용됩니다. "
                 "순수 UML Port가 필요하면 stereotype='none'을 전달하세요."
             ),
@@ -423,7 +425,25 @@ async def catia_magic_create_element(
                 "Stereotype 전용 — 이 스테레오타입을 붙일 수 있는 메타클래스 이름 목록. "
                 "예: ['Class'], ['Property', 'Port']. "
                 "프로파일 정의: element_type='Profile' → 'Stereotype'(owner=Profile, metaclasses 지정) → "
-                "태그는 element_type='Property'(owner=Stereotype, type_id=타입 ID)로 생성."
+                "태그는 element_type='Property'(owner=Stereotype, type_id=타입 ID)로 생성. "
+                "열거형 타입은 'Enumeration' + 'EnumerationLiteral'(owner=Enumeration)로 만듭니다."
+            ),
+        ),
+    ] = None,
+    multiplicity: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description="Property(태그) 전용 — 개수 제한. 예: '1', '0..1', '0..*', '1..*', '*'",
+        ),
+    ] = None,
+    default_value: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "Property(태그) 전용 — 기본값. 타입에 맞게 변환됩니다 "
+                "(Integer/Real/Boolean은 숫자·true/false, 열거형은 리터럴 이름). type_id와 함께 지정하세요."
             ),
         ),
     ] = None,
@@ -461,7 +481,8 @@ async def catia_magic_create_element(
     """
     try:
         return await _get_bridge().create_element(
-            project_id, element_type, name, owner_id, stereotype, type_id, aggregation, metaclasses
+            project_id, element_type, name, owner_id, stereotype, type_id, aggregation, metaclasses,
+            multiplicity, default_value,
         )
     except Exception as e:
         _fail(e)
@@ -509,7 +530,7 @@ async def catia_magic_update_element(
             default=None,
             description=(
                 "적용할 스테레오타입 이름 (선택 사항). "
-                "예: 'Block', 'Requirement'. "
+                "예: 'Block', 'Requirement', 'TestProfile::Subsystem'(프로파일 지정). "
                 "이미 적용된 스테레오타입에 추가로 적용됩니다."
             ),
         ),
@@ -538,6 +559,14 @@ async def catia_magic_update_element(
             ),
         ),
     ] = None,
+    multiplicity: Annotated[
+        Optional[str],
+        Field(default=None, description="Property(태그) 전용 — 개수 제한. 예: '1', '0..1', '0..*'"),
+    ] = None,
+    default_value: Annotated[
+        Optional[str],
+        Field(default=None, description="Property(태그) 전용 — 기본값 (열거형은 리터럴 이름)."),
+    ] = None,
 ) -> dict[str, Any]:
     """기존 요소의 이름, documentation, stereotype, type, aggregation을 수정합니다.
 
@@ -559,7 +588,8 @@ async def catia_magic_update_element(
     """
     try:
         return await _get_bridge().update_element(
-            project_id, element_id, name, documentation, stereotype, type_id, aggregation, metaclasses
+            project_id, element_id, name, documentation, stereotype, type_id, aggregation, metaclasses,
+            multiplicity, default_value,
         )
     except Exception as e:
         _fail(e)
@@ -868,7 +898,7 @@ async def catia_magic_set_stereotype_property(
     ],
     stereotype: Annotated[
         str,
-        Field(description="속성이 속한 스테레오타입 이름. 예: 'Block', 'Requirement'")
+        Field(description="속성이 속한 스테레오타입 이름. 예: 'Block', 'Requirement', 'TestProfile::Subsystem'(프로파일 지정)")
     ],
     property_name: Annotated[
         str,
@@ -879,7 +909,9 @@ async def catia_magic_set_stereotype_property(
         Field(description=(
             "설정할 값 (문자열). 숫자·불리언도 문자열로 전달합니다. "
             "요소를 가리키는 태그(예: Customization의 customizationTarget)는 요소 ID를, "
-            "여러 개면 쉼표로 구분한 ID 목록을 전달합니다."
+            "여러 개면 쉼표로 구분한 ID 목록을 전달합니다. "
+            "여러 값 태그(개수 제한이 1이 아님)는 쉼표로 구분하면 값 여러 개로 들어갑니다. "
+            "열거형 태그는 리터럴 이름, Integer/Real/Boolean 태그는 해당 형식으로 넣습니다."
         ))
     ],
 ) -> dict[str, Any]:

@@ -4,6 +4,7 @@ import com.nomagic.magicdraw.core.Project;
 import com.nomagic.magicdraw.openapi.uml.SessionManager;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Property;
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
 import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
 import com.sun.net.httpserver.HttpExchange;
@@ -113,10 +114,11 @@ public class StereotypePropertiesHandler extends BaseHandler {
             // 프로젝트 전체에서 이름으로 찾으면 엉뚱한 것을 잡고 조용히 아무것도 안 바뀐다
             // → 요소에 실제 적용된 스테레오타입 중에서 먼저 찾는다.
             Object stereotype = null;
-            for (Stereotype applied : StereotypesHelper.getStereotypes(el)) {
+            if (stereotypeName.contains("::")) stereotype = findQualifiedStereotype(project, stereotypeName);
+            else for (Stereotype applied : StereotypesHelper.getStereotypes(el)) {
                 if (stereotypeName.equals(applied.getName())) { stereotype = applied; break; }
             }
-            if (stereotype == null) {
+            if (stereotype == null && !stereotypeName.contains("::")) {
                 Class<?> shClass = Class.forName(STEREOTYPES_HELPER);
                 Method getStereotype = shClass.getMethod("getStereotype", Project.class, String.class);
                 stereotype = getStereotype.invoke(null, project, stereotypeName);
@@ -129,14 +131,10 @@ public class StereotypePropertiesHandler extends BaseHandler {
             }
 
             Stereotype st = (Stereotype) stereotype;
-            List<Element> refs = resolveElementRefs(project, value);
-            if (refs == null) {
-                StereotypesHelper.setStereotypePropertyValue(el, st, propertyName, value);
-            } else {
-                // 요소를 가리키는 태그(예: customizationTarget): 첫 값은 교체, 나머지는 추가
-                for (int i = 0; i < refs.size(); i++)
-                    StereotypesHelper.setStereotypePropertyValue(el, st, propertyName, refs.get(i), i > 0);
-            }
+            // 첫 값은 교체, 나머지는 추가 (여러 값 태그)
+            List<?> values = toTagValues(project, st, propertyName, value);
+            for (int i = 0; i < values.size(); i++)
+                StereotypesHelper.setStereotypePropertyValue(el, st, propertyName, values.get(i), i > 0);
 
             sm.closeSession(project);
             sendJson(exchange, 200, String.format(
@@ -155,6 +153,24 @@ public class StereotypePropertiesHandler extends BaseHandler {
             sm.cancelSession(project);
             sendError(exchange, 500, "Failed to set stereotype property: " + e.getMessage());
         }
+    }
+
+    /**
+     * 입력 문자열 → 태그에 넣을 값 목록.
+     * 요소 ID면 요소, 여러 값 태그(upper ≠ 1)면 쉼표로 나눔, 각 값은 태그 타입(열거형/숫자/불리언)에 맞게 변환.
+     */
+    private List<?> toTagValues(Project project, Stereotype st, String tagName, String value) throws Exception {
+        List<Element> refs = resolveElementRefs(project, value);
+        if (refs != null) return refs;
+        Property tag = null;
+        for (Object p : StereotypesHelper.getPropertiesWithDerived(st))
+            if (p instanceof Property && tagName.equals(((Property) p).getName())) { tag = (Property) p; break; }
+        if (tag == null) throw new Exception("태그를 찾을 수 없습니다: " + st.getName() + "." + tagName);
+        boolean many = tag.getUpper() != 1;
+        List<Object> out = new ArrayList<>();
+        for (String token : many ? value.split(",") : new String[]{value})
+            out.add(convertForType(tag.getType(), many ? token.trim() : token));
+        return out;
     }
 
     /**

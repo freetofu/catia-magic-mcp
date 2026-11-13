@@ -8,7 +8,12 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Package;
+import com.nomagic.uml2.ext.jmi.helpers.CoreHelper;
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
+import com.nomagic.uml2.ext.jmi.helpers.ValueSpecificationHelper;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Property;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Type;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.ValueSpecification;
 import com.nomagic.uml2.ext.magicdraw.mdprofiles.Stereotype;
 import com.sun.net.httpserver.HttpExchange;
 import java.io.IOException;
@@ -179,9 +184,10 @@ public class ElementsHandler extends BaseHandler {
             if (newEl instanceof NamedElement) ((NamedElement) newEl).setName(name);
             ModelElementsManager.getInstance().addElement(newEl, owner);
             // 스테레오타입 적용 (선택적)
-            if (stereotype != null && !stereotype.isEmpty()) applyStereotype(project, newEl, stereotype);
+            if (stereotype != null && !stereotype.isEmpty()) stereotype = applyStereotype(project, newEl, stereotype);
             // typeId / aggregation 적용 (선택적 — Part Property, Port 타입 설정 등)
             applyTypedProperties(project, newEl, typeId, aggregation);
+            applyMultiplicityAndDefault(project, newEl, json);
             applyMetaclasses(project, newEl, json.get("metaclasses"));
             sm.closeSession(project);
             revealInContainmentTree(project, newEl);  // 생성 직후 모델 탐색기에서 바로 보이도록 트리 펼치기
@@ -212,6 +218,7 @@ public class ElementsHandler extends BaseHandler {
             String typeId      = (String) json.get("typeId");
             String aggregation = (String) json.get("aggregation");
             applyTypedProperties(project, el, typeId, aggregation);
+            applyMultiplicityAndDefault(project, el, json);
             applyMetaclasses(project, el, json.get("metaclasses"));
             sm.closeSession(project);
             sendJson(exchange, 200, elementToJsonDetailed(project, el));
@@ -284,6 +291,25 @@ public class ElementsHandler extends BaseHandler {
      * 대신 ElementsFactory.createXxxInstance() 리플렉션 호출 + addElement() 패턴 사용.
      * 타입명 예) "Class" → factory.createClassInstance()
      */
+    /**
+     * Property(스테레오타입 태그 포함)의 개수 제한("0..*", "1", "*")과 기본값.
+     * 기본값은 타입(Integer/Real/Boolean)에 맞게 바꾸고, 열거형 타입이면 리터럴 이름으로 찾는다.
+     */
+    private void applyMultiplicityAndDefault(Project project, Element el, JSONObject json) throws Exception {
+        String mult = (String) json.get("multiplicity");
+        Object def = json.get("defaultValue");
+        if (mult == null && def == null) return;
+        if (!(el instanceof Property)) throw new Exception("multiplicity/defaultValue는 Property(태그)에만 지정할 수 있습니다.");
+        Property prop = (Property) el;
+        if (mult != null) CoreHelper.setMultiplicity(mult, prop);
+        if (def == null) return;
+
+        Type t = prop.getType();
+        ValueSpecification vs = ValueSpecificationHelper.createValueSpecification(project, t, convertForType(t, def.toString()), null);
+        if (vs == null) throw new Exception("기본값을 만들 수 없습니다: " + def);
+        prop.setDefaultValue(vs);
+    }
+
     /** Stereotype이 붙을 수 있는 메타클래스 지정 (예: ["Class","Port"]). 기존 목록을 교체한다. */
     @SuppressWarnings("unchecked")
     private void applyMetaclasses(Project project, Element el, Object raw) throws Exception {

@@ -206,6 +206,8 @@ class AsyncBridgeClient:
         type_id: Optional[str] = None,
         aggregation: Optional[str] = None,
         metaclasses: Optional[list[str]] = None,
+        multiplicity: Optional[str] = None,
+        default_value: Optional[str] = None,
     ) -> dict:
         """POST /project/{id}/element → 201: {"id", "name", "type", "stereotype"}"""
         # update_element과 같은 규칙(is not None)을 쓴다. 빈 문자열을 조용히 버리면
@@ -221,6 +223,10 @@ class AsyncBridgeClient:
             body["aggregation"] = aggregation
         if metaclasses is not None:
             body["metaclasses"] = metaclasses
+        if multiplicity is not None:
+            body["multiplicity"] = multiplicity
+        if default_value is not None:
+            body["defaultValue"] = default_value
         return await self._post(f"/project/{project_id}/element", body)
 
     async def update_element(
@@ -233,6 +239,8 @@ class AsyncBridgeClient:
         type_id: Optional[str] = None,
         aggregation: Optional[str] = None,
         metaclasses: Optional[list[str]] = None,
+        multiplicity: Optional[str] = None,
+        default_value: Optional[str] = None,
     ) -> dict:
         """PUT /project/{id}/elements/{eid} → {"id", "name", "type", "ownerId", "childCount"}"""
         body: dict[str, Any] = {}
@@ -248,6 +256,10 @@ class AsyncBridgeClient:
             body["aggregation"] = aggregation
         if metaclasses is not None:
             body["metaclasses"] = metaclasses
+        if multiplicity is not None:
+            body["multiplicity"] = multiplicity
+        if default_value is not None:
+            body["defaultValue"] = default_value
         return await self._put(f"/project/{project_id}/elements/{element_id}", body)
 
     async def delete_element(self, project_id: str, element_id: str) -> dict:

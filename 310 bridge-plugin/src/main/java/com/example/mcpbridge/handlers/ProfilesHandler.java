@@ -69,10 +69,14 @@ public class ProfilesHandler extends BaseHandler {
             for (Property prop : st.getOwnedAttribute()) {
                 String n = prop.getName() != null ? prop.getName() : "";
                 if (n.startsWith("base_")) continue;  // 메타클래스 연결 끝이지 태그가 아님
-                tags.add(String.format("{\"id\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"lower\":%d,\"upper\":%d}",
+                Object def = prop.getDefaultValue() != null
+                    ? com.nomagic.uml2.ext.jmi.helpers.ValueSpecificationHelper.getValueSpecificationValue(prop.getDefaultValue()) : null;
+                if (def instanceof com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement)  // 열거형 리터럴
+                    def = ((com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement) def).getName();
+                tags.add(String.format("{\"id\":\"%s\",\"name\":\"%s\",\"type\":\"%s\",\"lower\":%d,\"upper\":%d,\"defaultValue\":\"%s\"}",
                     escapeJson(prop.getLocalID()), escapeJson(n),
                     escapeJson(prop.getType() != null ? prop.getType().getName() : ""),
-                    prop.getLower(), prop.getUpper()));
+                    prop.getLower(), prop.getUpper(), escapeJson(def != null ? def.toString() : "")));
             }
 
             sts.add(String.format("{\"id\":\"%s\",\"name\":\"%s\",\"isAbstract\":%s,\"metaclasses\":%s,\"parents\":%s,\"tags\":%s}",
