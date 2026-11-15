@@ -83,6 +83,40 @@ All tool names are prefixed with `catia_magic_`.
 - `reorder_attributes` changes the order of a block's properties/ports (listed IDs go first, the rest keep their order).
 - `layout_diagram`: `smart`/`compact` currently fall back to the standard quick layout (hierarchic).
 
+## Profile and DSL modeling
+
+You can build a UML profile, customize it as a DSL and give it icons, all through the tools above.
+
+| Task | How |
+|---|---|
+| Create a profile, stereotype or enumeration | `create_element` with `element_type` = `Profile`, `Stereotype`, `Enumeration` or `EnumerationLiteral` |
+| Choose which element kinds a stereotype extends | `metaclasses` on `create_element` / `update_element`, e.g. `["Class", "Port"]` |
+| Add a tag (stereotype attribute) | `create_element` with `element_type="Property"`, owner = the stereotype, `type_id` = String / Integer / Real / Boolean / an enumeration |
+| Tag multiplicity and default value | `multiplicity` (e.g. `0..1`, `1..*`) and `default_value` (enumeration literal name for enum tags) |
+| Inspect a profile | `get_profile`: stereotypes with metaclasses, parents and tags (type, multiplicity, default) |
+| Apply a stereotype | `stereotype` on `create_element` / `update_element`. Use `Profile::Stereotype` when several profiles have a stereotype with the same name |
+| Set tag values | `set_stereotype_property`: element IDs for element references, comma-separated values for multi-valued tags, literal names for enum tags. Values that do not match the tag type are rejected |
+| Stereotype icon | `update_element` with `icon_path` = absolute path of a png/gif/jpg/svg file on the CATIA Magic machine. The image is stored in the model. A child stereotype does not inherit its parent's icon |
+
+### DSL customization
+
+A DSL customization is a Class with the «Customization» stereotype (from the built-in
+"DSL Customization" profile), placed inside your profile. Create it with `create_element`
+(`stereotype="DSL Customization::Customization"`) and set its tags with `set_stereotype_property`
+(element references by ID). Useful tags:
+
+| Tag | Effect |
+|---|---|
+| `customizationTarget` | The stereotype being customized |
+| `hideMetatype` + `representationText` | Show elements as e.g. "Vehicle Subsystem" instead of "Class" |
+| `category` | Menu group name in Create Element / Create Relation |
+| `possibleOwners` | Where the element can be created. **Required** for it to appear in the Create Element menu (e.g. the Package and Model metaclasses) |
+| `suggestedOwnedTypes` | Element kinds suggested inside it |
+| `disallowedRelationships` / `allowedRelationships` | Relations hidden from / offered in its relation menu |
+| `typesForSource` / `typesForTarget` | For a relation stereotype: which element kinds can be at each end |
+
+Customization changes take effect after the project is reopened.
+
 ## License
 
 [MIT](LICENSE)
