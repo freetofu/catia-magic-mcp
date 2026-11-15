@@ -220,6 +220,7 @@ public class ElementsHandler extends BaseHandler {
             applyTypedProperties(project, el, typeId, aggregation);
             applyMultiplicityAndDefault(project, el, json);
             applyMetaclasses(project, el, json.get("metaclasses"));
+            applyIcon(el, (String) json.get("iconPath"));
             sm.closeSession(project);
             sendJson(exchange, 200, elementToJsonDetailed(project, el));
         } catch (Exception e) { sm.cancelSession(project); sendError(exchange, 500, "요소 수정 실패: " + e.getMessage()); }
@@ -312,6 +313,16 @@ public class ElementsHandler extends BaseHandler {
 
     /** Stereotype이 붙을 수 있는 메타클래스 지정 (예: ["Class","Port"]). 기존 목록을 교체한다. */
     @SuppressWarnings("unchecked")
+    // Icon file on the MagicDraw machine (bridge listens on localhost only).
+    private void applyIcon(Element el, String path) throws Exception {
+        if (path == null) return;
+        if (!(el instanceof Stereotype)) throw new Exception("iconPath는 Stereotype에만 지정할 수 있습니다.");
+        java.io.File f = new java.io.File(path);
+        if (!f.isFile()) throw new Exception("아이콘 파일을 찾을 수 없습니다: " + path);
+        StereotypesHelper.assignImageFilesToStereotype((Stereotype) el, java.util.Collections.singletonList(f));
+        if (((Stereotype) el).getIcon().isEmpty()) throw new Exception("아이콘을 읽지 못했습니다 (png/gif/jpg/svg 확인): " + path);
+    }
+
     private void applyMetaclasses(Project project, Element el, Object raw) throws Exception {
         if (raw == null) return;
         if (!(el instanceof Stereotype)) throw new Exception("metaclasses는 Stereotype에만 지정할 수 있습니다.");

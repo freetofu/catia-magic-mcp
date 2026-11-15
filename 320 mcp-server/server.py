@@ -567,6 +567,16 @@ async def catia_magic_update_element(
         Optional[str],
         Field(default=None, description="Property(태그) 전용 — 기본값 (열거형은 리터럴 이름)."),
     ] = None,
+    icon_path: Annotated[
+        Optional[str],
+        Field(
+            default=None,
+            description=(
+                "Stereotype 전용 — 아이콘 이미지 파일의 절대 경로 (MagicDraw가 도는 PC 기준, png/gif/jpg/svg). "
+                "기존 아이콘을 교체합니다. 예: 'C:\\\\icons\\\\battery.png'"
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """기존 요소의 이름, documentation, stereotype, type, aggregation을 수정합니다.
 
@@ -589,7 +599,7 @@ async def catia_magic_update_element(
     try:
         return await _get_bridge().update_element(
             project_id, element_id, name, documentation, stereotype, type_id, aggregation, metaclasses,
-            multiplicity, default_value,
+            multiplicity, default_value, icon_path,
         )
     except Exception as e:
         _fail(e)

@@ -241,6 +241,7 @@ class AsyncBridgeClient:
         metaclasses: Optional[list[str]] = None,
         multiplicity: Optional[str] = None,
         default_value: Optional[str] = None,
+        icon_path: Optional[str] = None,
     ) -> dict:
         """PUT /project/{id}/elements/{eid} → {"id", "name", "type", "ownerId", "childCount"}"""
         body: dict[str, Any] = {}
@@ -260,6 +261,8 @@ class AsyncBridgeClient:
             body["multiplicity"] = multiplicity
         if default_value is not None:
             body["defaultValue"] = default_value
+        if icon_path is not None:
+            body["iconPath"] = icon_path
         return await self._put(f"/project/{project_id}/elements/{element_id}", body)
 
     async def delete_element(self, project_id: str, element_id: str) -> dict:
