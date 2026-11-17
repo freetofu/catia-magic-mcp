@@ -4,6 +4,9 @@ import com.nomagic.magicdraw.core.Project;
 import com.nomagic.magicdraw.openapi.uml.ModelElementsManager;
 import com.nomagic.magicdraw.openapi.uml.ReadOnlyElementException;
 import com.nomagic.magicdraw.openapi.uml.SessionManager;
+import com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityEdge;
+import com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.Activity;
+import com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.ActivityNode;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
 import com.sun.net.httpserver.HttpExchange;
@@ -45,6 +48,7 @@ public class RelationsHandler extends BaseHandler {
         "Association", "Connector",
         "PackageMerge", "PackageImport",
         "InformationFlow", "Deployment", "Manifestation",
+        "Control Flow", "Object Flow", "ControlFlow", "ObjectFlow",
         // SysML Requirement relations (Abstraction + stereotype)
         "DeriveReqt", "Satisfy", "Verify", "Trace", "Copy", "Refine"
     ));
@@ -116,6 +120,12 @@ public class RelationsHandler extends BaseHandler {
                 }
             } else if ("Generalization".equals(relationType) || "InterfaceRealization".equals(relationType)) {
                 owner = source;
+            } else if ("ControlFlow".equalsIgnoreCase(relationType) || "ObjectFlow".equalsIgnoreCase(relationType)) {
+                owner = findActivity(source);
+                if (owner == null) {
+                    sm.cancelSession(project);
+                    sendError(exchange, 400, "source가 액티비티 안에 있지 않습니다 (액션/노드/핀이어야 함): " + sourceId); return;
+                }
             } else {
                 owner = source.getOwner() != null ? source.getOwner() : project.getPrimaryModel();
             }
@@ -203,6 +213,15 @@ public class RelationsHandler extends BaseHandler {
      */
     private void connectEndpoints(Project project, Element relation, Element source, Element target,
                                   String sourcePartId, String targetPartId) {
+        // ControlFlow / ObjectFlow: source/target must be activity nodes (actions, control nodes, pins)
+        if (relation instanceof ActivityEdge) {
+            if (!(source instanceof ActivityNode) || !(target instanceof ActivityNode))
+                throw new IllegalArgumentException("ControlFlow/ObjectFlow의 양 끝은 액션·노드·핀이어야 합니다.");
+            ((ActivityEdge) relation).setSource((ActivityNode) source);
+            ((ActivityEdge) relation).setTarget((ActivityNode) target);
+            return;
+        }
+
         // Dependency 계열: Usage, Realization, Abstraction도 Dependency를 상속
         if (relation instanceof com.nomagic.uml2.ext.magicdraw.classes.mddependencies.Dependency) {
             com.nomagic.uml2.ext.magicdraw.classes.mddependencies.Dependency dep =
@@ -291,6 +310,13 @@ public class RelationsHandler extends BaseHandler {
         }
 
         // Association 등 기타: 자동 연결 미지원 (요소 생성만 수행)
+    }
+
+    /** Nearest owning Activity (a pin's owner is an action, whose owner is the activity). */
+    private Element findActivity(Element el) {
+        for (Element e = el; e != null; e = e.getOwner())
+            if (e instanceof Activity) return e;
+        return null;
     }
 
     /** 모델 트리를 재귀 탐색하여 관계 요소 수집 */

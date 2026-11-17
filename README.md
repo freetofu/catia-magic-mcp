@@ -82,6 +82,17 @@ All tool names are prefixed with `catia_magic_`.
 - `export_diagram` writes a PNG to the temp folder and returns its path, so the client can look at the diagram.
 - `reorder_attributes` changes the order of a block's properties/ports (listed IDs go first, the rest keep their order).
 - `layout_diagram`: `smart`/`compact` currently fall back to the standard quick layout (hierarchic).
+- `create_diagram` short names (`bdd`, `ibd`, `activity`, `sequence`, `statemachine`, `usecase`, `package`) create SysML diagrams;
+  `umlactivity`, `umlsequence`, ... create plain UML ones.
+- Activities: `create_relation` with `ControlFlow` / `ObjectFlow` (owner is the activity); `create_element` with
+  `InputPin` / `OutputPin` (owner = action, `type_id` = pin type). `add_relation_to_diagram` shows missing pin symbols.
+  Use `CallBehaviorAction` for actions by default.
+- Notes: `create_element` with `element_type='Comment'`, `body` and `annotated_element_ids`. Adding the note to a diagram
+  draws the anchor lines to targets already shown; for a note already on the diagram use
+  `display_all_paths(display_note_anchors=true)`.
+- Symbol colors: `set_symbol_bounds(fill_color='#FFE699')`, and text/line colors per symbol with
+  `colors={'ATTRIBUTE_COLOR': '#C00000', 'PEN_COLOR': '#0070C0'}` (PropertyID names; `OPERATION_COLOR`, `PORTS_COLOR`, ...).
+  A single attribute line cannot be colored on its own.
 
 ## Profile and DSL modeling
 

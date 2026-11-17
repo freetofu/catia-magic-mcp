@@ -713,6 +713,10 @@ public class DiagramSymbolsHandler extends BaseHandler {
 
             sm.closeSession(project);
             System.err.println("[DiagramSymbols] symbol created: " + (created != null));
+            // Comment(Note): draw anchors to annotated elements already on the diagram
+            if (el instanceof com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment
+                    && !((com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment) el).getAnnotatedElement().isEmpty())
+                drawNoteAnchors(project, diagram);
 
             if (created != null) {
                 String symbolJson = presentationToJson(created);
@@ -770,14 +774,49 @@ public class DiagramSymbolsHandler extends BaseHandler {
             int nw = (wNum != null) ? wNum.intValue() : bounds.width;
             int nh = (hNum != null) ? hNum.intValue() : bounds.height;
 
-            Rectangle newBounds = new Rectangle(nx, ny, nw, nh);
-            Method setBounds = targetPe.getClass().getMethod("setBounds", Rectangle.class);
-            setBounds.invoke(targetPe, newBounds);
+            if (xNum != null || yNum != null || wNum != null || hNum != null) {
+                Method setBounds = targetPe.getClass().getMethod("setBounds", Rectangle.class);
+                setBounds.invoke(targetPe, new Rectangle(nx, ny, nw, nh));
+            }
+            // fillColor "#RRGGBB" + colors {"ATTRIBUTE_COLOR":"#RRGGBB", "PEN_COLOR":...} (PropertyID field names)
+            String fill = (String) json.get("fillColor");
+            Map<String, String> colors = new java.util.LinkedHashMap<>();
+            if (json.get("colors") instanceof JSONObject)
+                for (Object k : ((JSONObject) json.get("colors")).keySet())
+                    colors.put((String) k, (String) ((JSONObject) json.get("colors")).get(k));
+            StringJoiner applied = new StringJoiner(",", "[", "]"), skipped = new StringJoiner(",", "[", "]");
+            if (fill != null || !colors.isEmpty()) {
+                Class<?> pemClass = Class.forName(PEM_CLASS);
+                Class<?> peArg = Class.forName("com.nomagic.magicdraw.uml.symbols.PresentationElement");
+                Object pem = pemClass.getMethod("getInstance").invoke(null);
+                com.nomagic.magicdraw.properties.PropertyManager current =
+                    (com.nomagic.magicdraw.properties.PropertyManager)
+                        pemClass.getMethod("getPropertyManager", peArg).invoke(pem, targetPe);
+                com.nomagic.magicdraw.properties.PropertyManager pm =
+                    new com.nomagic.magicdraw.properties.PropertyManager();
+                if (fill != null) {
+                    pm.addProperty(new com.nomagic.magicdraw.properties.ColorProperty(
+                        com.nomagic.magicdraw.properties.PropertyID.FILL_COLOR, java.awt.Color.decode(fill)));
+                    pm.addProperty(new com.nomagic.magicdraw.properties.BooleanProperty(
+                        com.nomagic.magicdraw.properties.PropertyID.USE_FILL_COLOR, true));
+                }
+                for (Map.Entry<String, String> c : colors.entrySet()) {
+                    String id;
+                    try { id = (String) com.nomagic.magicdraw.properties.PropertyID.class.getField(c.getKey()).get(null); }
+                    catch (Exception e) { skipped.add("\"" + escapeJson(c.getKey()) + "\""); continue; }
+                    // ponytail: a symbol only honours properties it already has (e.g. ATTRIBUTE_COLOR on class-like shapes)
+                    if (current == null || current.getProperty(id) == null) { skipped.add("\"" + escapeJson(c.getKey()) + "\""); continue; }
+                    pm.addProperty(new com.nomagic.magicdraw.properties.ColorProperty(id, java.awt.Color.decode(c.getValue())));
+                    applied.add("\"" + escapeJson(c.getKey()) + "\"");
+                }
+                pemClass.getMethod("setPresentationElementProperties", peArg,
+                        com.nomagic.magicdraw.properties.PropertyManager.class).invoke(pem, targetPe, pm);
+            }
 
             sm.closeSession(project);
             sendJson(exchange, 200, String.format(
-                "{\"symbolId\":\"%s\",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d}",
-                escapeJson(symbolId), nx, ny, nw, nh));
+                "{\"symbolId\":\"%s\",\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d,\"appliedColors\":%s,\"skippedColors\":%s}",
+                escapeJson(symbolId), nx, ny, nw, nh, applied, skipped));
 
         } catch (java.lang.reflect.InvocationTargetException e) {
             sm.cancelSession(project);
@@ -1061,6 +1100,15 @@ public class DiagramSymbolsHandler extends BaseHandler {
 
         if (sourceEl == null || targetEl == null) {
             try {
+                // ActivityEdge (ControlFlow/ObjectFlow): getSource() / getTarget() return one node each
+                Object s = relation.getClass().getMethod("getSource").invoke(relation);
+                Object t = relation.getClass().getMethod("getTarget").invoke(relation);
+                if (s instanceof Element && t instanceof Element) { sourceEl = (Element) s; targetEl = (Element) t; }
+            } catch (Exception ignore) {}
+        }
+
+        if (sourceEl == null || targetEl == null) {
+            try {
                 // Connector: getEnd() → List<ConnectorEnd>, ConnectorEnd.getRole() → ConnectableElement(Port)
                 Method getEnd = relation.getClass().getMethod("getEnd");
                 java.util.List<?> ends = (java.util.List<?>) getEnd.invoke(relation);
@@ -1079,6 +1127,11 @@ public class DiagramSymbolsHandler extends BaseHandler {
         // --- 다이어그램 내 심볼 수집 (중첩 포함) ---
         Map<String, List<Object>> symbolsByElementId = new HashMap<>();
         collectSymbolsByElementId(diagram, symbolsByElementId);
+
+        // Pins are not drawn automatically: put a missing pin symbol on its action's symbol first
+        boolean pinAdded = ensurePinSymbol(project, sourceEl, symbolsByElementId)
+                         | ensurePinSymbol(project, targetEl, symbolsByElementId);
+        if (pinAdded) { symbolsByElementId.clear(); collectSymbolsByElementId(diagram, symbolsByElementId); }
 
         // --- 중복 시각화 검사 ---
         if (!Boolean.TRUE.equals(allowDuplicate)) {
@@ -1132,15 +1185,16 @@ public class DiagramSymbolsHandler extends BaseHandler {
         if (diagram == null) { sendError(exchange, 404, "DIAGRAM_NOT_FOUND: " + diagramId); return; }
 
         // 옵션: displayContainment (기본 false). 요구사항 계층 등에서 containment 표시가 필요할 때 true.
-        boolean displayContainment = false;
+        boolean displayContainment = false, noteAnchors = false;
         try {
             String body = readRequestBody(exchange);
             if (body != null && !body.trim().isEmpty()) {
                 JSONObject j = (JSONObject) new JSONParser().parse(body);
                 displayContainment = Boolean.TRUE.equals(j.get("displayContainment"));
+                noteAnchors = Boolean.TRUE.equals(j.get("displayNoteAnchors"));
             }
         } catch (Exception ignore) {}
-        final boolean fDisplayContainment = displayContainment;
+        final boolean fDisplayContainment = displayContainment, fNoteAnchors = noteAnchors;
 
         // 결과/오류를 EDT 밖으로 전달하기 위한 홀더.
         final java.util.List<Object> keptPaths = new java.util.ArrayList<>();
@@ -1172,7 +1226,7 @@ public class DiagramSymbolsHandler extends BaseHandler {
                 Object opts = optClass.getConstructor().newInstance();
                 optClass.getMethod("setDisplayRelationships", boolean.class).invoke(opts, true);
                 optClass.getMethod("setDisplayContainmentLinks", boolean.class).invoke(opts, fDisplayContainment);
-                try { optClass.getMethod("setDisplayNoteAnchors", boolean.class).invoke(opts, false); } catch (Exception ignore) {}
+                try { optClass.getMethod("setDisplayNoteAnchors", boolean.class).invoke(opts, fNoteAnchors); } catch (Exception ignore) {}
                 try { optClass.getMethod("setDisplayPathsToSelf", boolean.class).invoke(opts, false); } catch (Exception ignore) {}
 
                 Method displayPaths = dpeClass.getMethod("displayPathElements", Collection.class, optClass);
@@ -1244,6 +1298,44 @@ public class DiagramSymbolsHandler extends BaseHandler {
         sendJson(exchange, 200, String.format(
             "{\"diagramId\":\"%s\",\"selectedSymbolCount\":%d,\"count\":%d,\"paths\":%s}",
             escapeJson(diagramId), selectedCount[0], count, pathsJson));
+    }
+
+    /** Draw only note anchors (Comment.annotatedElement) between symbols on the diagram. Runs on EDT. */
+    private void drawNoteAnchors(Project project, Object diagram) {
+        Runnable task = () -> {
+            SessionManager sm = SessionManager.getInstance();
+            sm.createSession(project, "MCP: note anchors");
+            try {
+                java.util.List<Object> shapes = new java.util.ArrayList<>();
+                collectShapeSymbols(diagram, shapes,
+                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+                // skip inner shapes that show the same element as their parent (else anchors get drawn twice)
+                shapes.removeIf(s -> {
+                    try {
+                        Object parent = s.getClass().getMethod("getParent").invoke(s);
+                        Object el = s.getClass().getMethod("getElement").invoke(s);
+                        return parent != null && el != null
+                            && el == parent.getClass().getMethod("getElement").invoke(parent);
+                    } catch (Exception e) { return false; }
+                });
+                Class<?> dpeClass = Class.forName("com.nomagic.magicdraw.uml.symbols.DisplayPathElements");
+                Class<?> optClass = Class.forName(
+                    "com.nomagic.magicdraw.uml.symbols.DisplayPathElements$DisplayPathOptions");
+                Object opts = optClass.getConstructor().newInstance();
+                optClass.getMethod("setDisplayRelationships", boolean.class).invoke(opts, false);
+                optClass.getMethod("setDisplayContainmentLinks", boolean.class).invoke(opts, false);
+                optClass.getMethod("setDisplayNoteAnchors", boolean.class).invoke(opts, true);
+                dpeClass.getMethod("displayPathElements", Collection.class, optClass).invoke(null, shapes, opts);
+                sm.closeSession(project);
+            } catch (Throwable t) {
+                try { sm.cancelSession(project); } catch (Exception ignore) {}
+                System.err.println("[NoteAnchors] failed: " + t);
+            }
+        };
+        try {
+            if (javax.swing.SwingUtilities.isEventDispatchThread()) task.run();
+            else javax.swing.SwingUtilities.invokeAndWait(task);
+        } catch (Exception e) { System.err.println("[NoteAnchors] EDT: " + e); }
     }
 
     /** path PE가 표현하는 모델 관계의 localID 반환. 없으면 "". */
@@ -1643,6 +1735,28 @@ public class DiagramSymbolsHandler extends BaseHandler {
     /** 다이어그램 내 심볼을 elementId 기준으로 수집 (중첩 재귀 탐색 + PE 중복 제거)
      *  MagicDraw API에 따라 getPresentationElements가 이미 중첩 포함인 경우가 있어
      *  IdentityHashMap 기반으로 동일 PE 객체를 한 번만 처리한다. */
+    /** If el is a pin with no symbol and its action has one, create the pin symbol on the action. */
+    private boolean ensurePinSymbol(Project project, Element el, Map<String, List<Object>> symbols) {
+        if (!(el instanceof com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.Pin)) return false;
+        if (symbols.containsKey(el.getLocalID()) || el.getOwner() == null) return false;
+        List<Object> actionSyms = symbols.get(el.getOwner().getLocalID());
+        if (actionSyms == null || actionSyms.isEmpty()) return false;
+        SessionManager sm = SessionManager.getInstance();
+        sm.createSession(project, "MCP: show pin - " + el.getLocalID());
+        try {
+            Class<?> pemClass = Class.forName(PEM_CLASS);
+            Object pem = pemClass.getMethod("getInstance").invoke(null);
+            Class<?> peClass = Class.forName("com.nomagic.magicdraw.uml.symbols.PresentationElement");
+            pemClass.getMethod("createShapeElement", Element.class, peClass).invoke(pem, el, actionSyms.get(0));
+            sm.closeSession(project);
+            return true;
+        } catch (Exception e) {
+            sm.cancelSession(project);
+            System.err.println("[AddRelation] pin symbol failed: " + e.getMessage());
+            return false;
+        }
+    }
+
     private void collectSymbolsByElementId(Object parent, Map<String, List<Object>> map) {
         java.util.Set<Object> visited = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
         collectSymbolsByElementIdRec(parent, map, visited);

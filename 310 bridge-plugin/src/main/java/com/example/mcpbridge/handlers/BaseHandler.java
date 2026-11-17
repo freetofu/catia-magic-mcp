@@ -299,6 +299,16 @@ public abstract class BaseHandler implements HttpHandler {
             } catch (Exception ignore) {}
         }
 
+        // ActivityEdge (ControlFlow/ObjectFlow): getSource() / getTarget() return a single node
+        if (sourceId.isEmpty()) {
+            try {
+                Object s = el.getClass().getMethod("getSource").invoke(el);
+                Object t = el.getClass().getMethod("getTarget").invoke(el);
+                if (s instanceof Element) sourceId = ((Element) s).getLocalID();
+                if (t instanceof Element) targetId = ((Element) t).getLocalID();
+            } catch (Exception ignore) {}
+        }
+
         // Connector: getEnd() → List<ConnectorEnd>, each has getRole()
         if (sourceId.isEmpty()) {
             try {

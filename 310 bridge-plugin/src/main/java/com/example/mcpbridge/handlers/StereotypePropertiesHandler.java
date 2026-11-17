@@ -166,7 +166,9 @@ public class StereotypePropertiesHandler extends BaseHandler {
         for (Object p : StereotypesHelper.getPropertiesWithDerived(st))
             if (p instanceof Property && tagName.equals(((Property) p).getName())) { tag = (Property) p; break; }
         if (tag == null) throw new Exception("태그를 찾을 수 없습니다: " + st.getName() + "." + tagName);
-        boolean many = tag.getUpper() != 1;
+        // StructuredExpression values are XML text that may contain commas: always one value.
+        boolean many = tag.getUpper() != 1
+                && !(tag.getType() != null && "StructuredExpression".equals(tag.getType().getName()));
         List<Object> out = new ArrayList<>();
         for (String token : many ? value.split(",") : new String[]{value})
             out.add(convertForType(tag.getType(), many ? token.trim() : token));

@@ -362,7 +362,9 @@ async def catia_magic_create_element(
             description=(
                 "생성할 요소 타입 (MagicDraw ElementsFactory 메서드명에서 "
                 "create/Instance를 제외한 부분). 예: 'Class', 'Package', "
-                "'Actor', 'Component', 'Interface', 'UseCase'"
+                "'Actor', 'Component', 'Interface', 'UseCase'. "
+                "액션은 기본적으로 'CallBehaviorAction'을 쓰세요 (OpaqueAction은 특별히 필요할 때만). "
+                "핀: 'InputPin' / 'OutputPin' — owner_id=액션, type_id=핀 타입(예: 스키마 클래스)."
             )
         ),
     ],
@@ -447,6 +449,20 @@ async def catia_magic_create_element(
             ),
         ),
     ] = None,
+    body: Annotated[
+        Optional[str],
+        Field(default=None, description="Comment(노트) 전용 — 본문 텍스트. element_type='Comment'와 함께 사용."),
+    ] = None,
+    annotated_element_ids: Annotated[
+        Optional[list[str]],
+        Field(
+            default=None,
+            description=(
+                "Comment(노트) 전용 — 노트가 가리킬 요소 ID 목록(annotatedElement). "
+                "노트와 대상이 같은 다이어그램에 있으면 add_element_to_diagram으로 노트를 넣을 때 앵커 선이 자동으로 그려집니다."
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """프로젝트 내에 새 UML/SysML 요소를 생성합니다.
 
@@ -482,7 +498,7 @@ async def catia_magic_create_element(
     try:
         return await _get_bridge().create_element(
             project_id, element_type, name, owner_id, stereotype, type_id, aggregation, metaclasses,
-            multiplicity, default_value,
+            multiplicity, default_value, body, annotated_element_ids,
         )
     except Exception as e:
         _fail(e)
@@ -577,6 +593,20 @@ async def catia_magic_update_element(
             ),
         ),
     ] = None,
+    body: Annotated[
+        Optional[str],
+        Field(default=None, description="Comment(노트) 전용 — 노트 본문 자체를 교체 (documentation과 다름)."),
+    ] = None,
+    annotated_element_ids: Annotated[
+        Optional[list[str]],
+        Field(
+            default=None,
+            description=(
+                "Comment(노트) 전용 — 가리킬 요소 ID 추가 (기존 연결 유지). 이미 다이어그램에 있는 노트의 선은 "
+                "display_all_paths(display_note_anchors=True)로 그립니다."
+            ),
+        ),
+    ] = None,
 ) -> dict[str, Any]:
     """기존 요소의 이름, documentation, stereotype, type, aggregation을 수정합니다.
 
@@ -599,7 +629,7 @@ async def catia_magic_update_element(
     try:
         return await _get_bridge().update_element(
             project_id, element_id, name, documentation, stereotype, type_id, aggregation, metaclasses,
-            multiplicity, default_value, icon_path,
+            multiplicity, default_value, icon_path, body, annotated_element_ids,
         )
     except Exception as e:
         _fail(e)
@@ -759,7 +789,9 @@ async def catia_magic_create_diagram(
             description=(
                 "생성할 다이어그램 타입. Bridge Plugin이 지원하는 단축명 또는 정식명을 사용합니다.\n"
                 "일반 다이어그램 단축명: bdd, ibd, usecase, sequence, activity, statemachine, "
-                "req (requirement), parametric\n"
+                "req (requirement), parametric, package. "
+                "activity/sequence/statemachine/usecase/package는 SysML 다이어그램으로 만들어집니다 "
+                "(순수 UML이 필요하면 umlactivity, umlsequence, umlstatemachine, umlusecase, umlpackage).\n"
                 "요구사항 추적 매트릭스 단축명: satisfy (Satisfy Requirement Matrix), "
                 "verify (Verify Requirement Matrix), derive (DeriveReqt Requirement Matrix), "
                 "refine (Refine Requirement Matrix)\n"
@@ -921,7 +953,7 @@ async def catia_magic_set_stereotype_property(
             "요소를 가리키는 태그(예: Customization의 customizationTarget)는 요소 ID를, "
             "여러 개면 쉼표로 구분한 ID 목록을 전달합니다. "
             "여러 값 태그(개수 제한이 1이 아님)는 쉼표로 구분하면 값 여러 개로 들어갑니다. "
-            "열거형 태그는 리터럴 이름, Integer/Real/Boolean 태그는 해당 형식으로 넣습니다."
+            "열거형 태그는 리터럴 이름, Integer/Real/Boolean 태그는 해당 형식으로 넣습니다. 계산 속성(derivedPropertySpecification)의 expression 태그는 StructuredExpression XML 전체를 한 값으로 넣습니다 (쉼표로 나누지 않음)."
         ))
     ],
 ) -> dict[str, Any]:
@@ -1319,8 +1351,20 @@ async def catia_magic_set_symbol_bounds(
         Optional[int],
         Field(default=None, description="새 높이 (픽셀). 생략 시 현재 값 유지.")
     ] = None,
+    fill_color: Annotated[
+        Optional[str],
+        Field(default=None, description="심볼 채우기 색상 '#RRGGBB' (예: '#FFE699'). 생략 시 그대로.")
+    ] = None,
+    colors: Annotated[
+        Optional[dict[str, str]],
+        Field(default=None, description=(
+            "글자·선 색상 {PropertyID 이름: '#RRGGBB'}. 예: {'ATTRIBUTE_COLOR': '#C00000'} = 속성 칸 글자색, "
+            "'OPERATION_COLOR', 'PORTS_COLOR', 'PEN_COLOR'(테두리/선). "
+            "그 심볼에 없는 속성은 적용하지 않고 응답의 skippedColors에 나옵니다."
+        ))
+    ] = None,
 ) -> dict[str, Any]:
-    """다이어그램 내 특정 심볼의 위치와 크기를 변경합니다.
+    """다이어그램 내 특정 심볼의 위치·크기·채우기 색상을 변경합니다.
 
     x, y, width, height 중 변경하려는 값만 지정하면 됩니다.
     나머지는 현재 값을 유지합니다.
@@ -1351,7 +1395,7 @@ async def catia_magic_set_symbol_bounds(
     """
     try:
         return await _get_bridge().set_symbol_bounds(
-            project_id, diagram_id, symbol_id, x, y, width, height
+            project_id, diagram_id, symbol_id, x, y, width, height, fill_color, colors
         )
     except Exception as e:
         _fail(e)
@@ -1655,6 +1699,10 @@ async def catia_magic_display_all_paths(
             "요구사항 다이어그램에서 상위/하위 요구사항 계층을 containment로 표시하려면 True."
         )),
     ] = False,
+    display_note_anchors: Annotated[
+        bool,
+        Field(description="노트(Comment)와 annotatedElement 사이 앵커 선도 그릴지 여부. 기본 False."),
+    ] = False,
 ) -> dict[str, Any]:
     """다이어그램에 이미 배치된 모든 심볼 사이의 관계를 path로 자동 시각화합니다.
 
@@ -1690,7 +1738,7 @@ async def catia_magic_display_all_paths(
     """
     try:
         return await _get_bridge().display_all_paths(
-            project_id, diagram_id, display_containment
+            project_id, diagram_id, display_containment, display_note_anchors
         )
     except Exception as e:
         _fail(e)
@@ -1726,7 +1774,9 @@ async def catia_magic_create_relation(
                 "'Satisfy' (설계 요소가 요구사항 충족), "
                 "'Verify' (테스트가 요구사항 검증), "
                 "'Trace' (추적), 'Copy' (복사), 'Refine' (세분화). "
-                "SysML 관계는 Abstraction에 스테레오타입이 적용됩니다."
+                "SysML 관계는 Abstraction에 스테레오타입이 적용됩니다. "
+                "액티비티 흐름: 'ControlFlow', 'ObjectFlow' — source/target은 액션·제어 노드·핀, "
+                "owner는 자동으로 둘러싼 액티비티. ObjectFlow는 보통 OutputPin → InputPin."
             )
         ),
     ],

@@ -208,6 +208,8 @@ class AsyncBridgeClient:
         metaclasses: Optional[list[str]] = None,
         multiplicity: Optional[str] = None,
         default_value: Optional[str] = None,
+        body_text: Optional[str] = None,
+        annotated_element_ids: Optional[list[str]] = None,
     ) -> dict:
         """POST /project/{id}/element → 201: {"id", "name", "type", "stereotype"}"""
         # update_element과 같은 규칙(is not None)을 쓴다. 빈 문자열을 조용히 버리면
@@ -227,6 +229,10 @@ class AsyncBridgeClient:
             body["multiplicity"] = multiplicity
         if default_value is not None:
             body["defaultValue"] = default_value
+        if body_text is not None:
+            body["body"] = body_text
+        if annotated_element_ids is not None:
+            body["annotatedElementIds"] = annotated_element_ids
         return await self._post(f"/project/{project_id}/element", body)
 
     async def update_element(
@@ -242,6 +248,8 @@ class AsyncBridgeClient:
         multiplicity: Optional[str] = None,
         default_value: Optional[str] = None,
         icon_path: Optional[str] = None,
+        body_text: Optional[str] = None,
+        annotated_element_ids: Optional[list[str]] = None,
     ) -> dict:
         """PUT /project/{id}/elements/{eid} → {"id", "name", "type", "ownerId", "childCount"}"""
         body: dict[str, Any] = {}
@@ -263,6 +271,10 @@ class AsyncBridgeClient:
             body["defaultValue"] = default_value
         if icon_path is not None:
             body["iconPath"] = icon_path
+        if body_text is not None:
+            body["body"] = body_text
+        if annotated_element_ids is not None:
+            body["annotatedElementIds"] = annotated_element_ids
         return await self._put(f"/project/{project_id}/elements/{element_id}", body)
 
     async def delete_element(self, project_id: str, element_id: str) -> dict:
@@ -370,6 +382,8 @@ class AsyncBridgeClient:
         y: Optional[int] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
+        fill_color: Optional[str] = None,
+        colors: Optional[dict[str, str]] = None,
     ) -> dict:
         """PUT /project/{id}/diagrams/{did}/symbols/{sid}"""
         body: dict[str, Any] = {}
@@ -381,6 +395,10 @@ class AsyncBridgeClient:
             body["width"] = width
         if height is not None:
             body["height"] = height
+        if fill_color is not None:
+            body["fillColor"] = fill_color
+        if colors is not None:
+            body["colors"] = colors
         return await self._put(
             f"/project/{project_id}/diagrams/{diagram_id}/symbols/{symbol_id}", body
         )
@@ -519,6 +537,7 @@ class AsyncBridgeClient:
         project_id: str,
         diagram_id: str,
         display_containment: bool = False,
+        display_note_anchors: bool = False,
     ) -> dict:
         """POST /project/{id}/diagrams/{did}/paths/display-all
         → {"diagramId", "selectedSymbolCount", "count", "paths":[{id,relationId,relationName}]}
@@ -529,7 +548,7 @@ class AsyncBridgeClient:
         """
         return await self._post(
             f"/project/{project_id}/diagrams/{diagram_id}/paths/display-all",
-            {"displayContainment": display_containment},
+            {"displayContainment": display_containment, "displayNoteAnchors": display_note_anchors},
             timeout=SLOW_TIMEOUT_SECONDS,
         )
 

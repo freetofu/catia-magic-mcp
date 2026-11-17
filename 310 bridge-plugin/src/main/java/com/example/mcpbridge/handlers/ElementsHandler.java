@@ -4,6 +4,11 @@ import com.nomagic.magicdraw.core.Project;
 import com.nomagic.magicdraw.openapi.uml.ModelElementsManager;
 import com.nomagic.magicdraw.openapi.uml.ReadOnlyElementException;
 import com.nomagic.magicdraw.openapi.uml.SessionManager;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.CallAction;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.InputPin;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.InvocationAction;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.OpaqueAction;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.OutputPin;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
@@ -182,13 +187,15 @@ public class ElementsHandler extends BaseHandler {
             // 2026x: createChildElement() 제거됨 → ElementsFactory 리플렉션 + addElement() 사용
             Element newEl = createElementByType(project, typeName);
             if (newEl instanceof NamedElement) ((NamedElement) newEl).setName(name);
-            ModelElementsManager.getInstance().addElement(newEl, owner);
+            if (newEl instanceof com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.Pin) addPin(newEl, owner);
+            else ModelElementsManager.getInstance().addElement(newEl, owner);
             // 스테레오타입 적용 (선택적)
             if (stereotype != null && !stereotype.isEmpty()) stereotype = applyStereotype(project, newEl, stereotype);
             // typeId / aggregation 적용 (선택적 — Part Property, Port 타입 설정 등)
             applyTypedProperties(project, newEl, typeId, aggregation);
             applyMultiplicityAndDefault(project, newEl, json);
             applyMetaclasses(project, newEl, json.get("metaclasses"));
+            applyComment(project, newEl, json);
             sm.closeSession(project);
             revealInContainmentTree(project, newEl);  // 생성 직후 모델 탐색기에서 바로 보이도록 트리 펼치기
             sendJson(exchange, 201, "{\"id\":\"" + escapeJson(newEl.getLocalID()) + "\",\"name\":\"" + escapeJson(name) + "\",\"type\":\"" + escapeJson(newEl.getHumanType()) + "\",\"stereotype\":\"" + escapeJson(stereotype != null ? stereotype : "") + "\"}");
@@ -221,6 +228,7 @@ public class ElementsHandler extends BaseHandler {
             applyMultiplicityAndDefault(project, el, json);
             applyMetaclasses(project, el, json.get("metaclasses"));
             applyIcon(el, (String) json.get("iconPath"));
+            applyComment(project, el, json);
             sm.closeSession(project);
             sendJson(exchange, 200, elementToJsonDetailed(project, el));
         } catch (Exception e) { sm.cancelSession(project); sendError(exchange, 500, "요소 수정 실패: " + e.getMessage()); }
@@ -313,7 +321,34 @@ public class ElementsHandler extends BaseHandler {
 
     /** Stereotype이 붙을 수 있는 메타클래스 지정 (예: ["Class","Port"]). 기존 목록을 교체한다. */
     @SuppressWarnings("unchecked")
+    // A pin belongs to a specific list of its action (input value / argument / result), not a plain owner.
+    private void addPin(Element pin, Element owner) throws Exception {
+        if (pin instanceof InputPin) {
+            if (owner instanceof OpaqueAction) { ((OpaqueAction) owner).getInputValue().add((InputPin) pin); return; }
+            if (owner instanceof InvocationAction) { ((InvocationAction) owner).getArgument().add((InputPin) pin); return; }
+        } else if (pin instanceof OutputPin) {
+            if (owner instanceof OpaqueAction) { ((OpaqueAction) owner).getOutputValue().add((OutputPin) pin); return; }
+            if (owner instanceof CallAction) { ((CallAction) owner).getResult().add((OutputPin) pin); return; }
+        }
+        throw new Exception("이 owner에는 핀을 추가할 수 없습니다 (Opaque/CallBehavior/CallOperation 액션 등): "
+            + (owner != null ? owner.getHumanType() : "null"));
+    }
+
     // Icon file on the MagicDraw machine (bridge listens on localhost only).
+    /** Comment/Note: body, annotatedElementIds (added to existing list) */
+    private void applyComment(Project project, Element el, JSONObject json) throws Exception {
+        Object body = json.get("body"), ids = json.get("annotatedElementIds");
+        if (body == null && ids == null) return;
+        if (!(el instanceof Comment)) throw new Exception("body/annotatedElementIds는 Comment에만 지정할 수 있습니다.");
+        Comment c = (Comment) el;
+        if (body != null) c.setBody((String) body);
+        if (ids instanceof java.util.List) for (Object id : (java.util.List<?>) ids) {
+            Element t = resolveElement(project, (String) id);
+            if (t == null) throw new Exception("annotatedElement를 찾을 수 없습니다: " + id);
+            if (!c.getAnnotatedElement().contains(t)) c.getAnnotatedElement().add(t);
+        }
+    }
+
     private void applyIcon(Element el, String path) throws Exception {
         if (path == null) return;
         if (!(el instanceof Stereotype)) throw new Exception("iconPath는 Stereotype에만 지정할 수 있습니다.");

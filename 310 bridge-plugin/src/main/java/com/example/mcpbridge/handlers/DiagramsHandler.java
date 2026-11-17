@@ -114,15 +114,18 @@ public class DiagramsHandler extends BaseHandler {
             }
             Method createDiagram = ModelElementsManager.class.getMethod(
                 "createDiagram", String.class, nsClass);
-            String creationType = creationTypeFor(typeName);
+            // Compare against the resolved full name, not the alias: comparing with the alias
+            // stored "activity"/"bdd" as the diagram type (wrong icon, not a real SysML diagram).
+            String resolvedType = resolveDiagramType(typeName);
+            String creationType = creationTypeFor(resolvedType);
             Object created = createDiagram.invoke(
                 ModelElementsManager.getInstance(), creationType, owner);
 
             // Custom matrix types are configurator registrations, not model factory
             // types.  They must be created as a standard Dependency Matrix first,
             // then assigned to the diagram representation.
-            if (!creationType.equals(typeName)) {
-                applyRepresentationType(created, typeName);
+            if (!creationType.equals(resolvedType)) {
+                applyRepresentationType(created, resolvedType);
             }
 
             // 이름 설정 - NamedElement는 직접 참조 가능 (슈퍼클래스 의존성 없음)
@@ -215,24 +218,32 @@ public class DiagramsHandler extends BaseHandler {
             case "par":
             case "parametric":
             case "parametricdiagram":            return "SysML Parametric Diagram";
-            // UML 표준 다이어그램
+            // Systems Engineer perspective: short names give the SysML diagram; "uml..." names give plain UML
             case "pkg":
             case "package":
-            case "packagediagram":               return DiagramTypeConstants.UML_CLASS_DIAGRAM;
-            case "class":
-            case "classdiagram":                 return DiagramTypeConstants.UML_CLASS_DIAGRAM;
+            case "packagediagram":               return "SysML Package Diagram";
             case "usecase":
             case "uc":
-            case "usecasediagram":               return DiagramTypeConstants.UML_USECASE_DIAGRAM;
+            case "usecasediagram":               return "SysML Use Case Diagram";
             case "sequence":
             case "seq":
-            case "sequencediagram":              return DiagramTypeConstants.UML_SEQUENCE_DIAGRAM;
+            case "sequencediagram":              return "SysML Sequence Diagram";
             case "activity":
             case "act":
-            case "activitydiagram":              return DiagramTypeConstants.UML_ACTIVITY_DIAGRAM;
+            case "activitydiagram":              return "SysML Activity Diagram";
             case "statemachine":
             case "state":
+            case "stm":
             case "statediagram":
+            case "statemachinediagram":          return "SysML State Machine Diagram";
+            // UML 표준 다이어그램
+            case "umlpackage":
+            case "class":
+            case "classdiagram":                 return DiagramTypeConstants.UML_CLASS_DIAGRAM;
+            case "umlusecase":                   return DiagramTypeConstants.UML_USECASE_DIAGRAM;
+            case "umlsequence":                  return DiagramTypeConstants.UML_SEQUENCE_DIAGRAM;
+            case "umlactivity":                  return DiagramTypeConstants.UML_ACTIVITY_DIAGRAM;
+            case "umlstatemachine":
             case "statechartdiagram":            return DiagramTypeConstants.UML_STATECHART_DIAGRAM;
             case "component":
             case "componentdiagram":             return DiagramTypeConstants.UML_COMPONENT_DIAGRAM;
