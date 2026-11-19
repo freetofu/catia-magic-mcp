@@ -651,7 +651,24 @@ public class DiagramSymbolsHandler extends BaseHandler {
             System.err.println("[DiagramSymbols] diagram class: " + diagram.getClass().getName()
                 + ", resolved peClass: " + peClass.getName());
 
-            if (xNum != null && yNum != null) {
+            if (el instanceof com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.ActivityPartition
+                    && el.getOwner() instanceof com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.Activity) {
+                // Swimlane: one symbol showing all top-level partitions of the activity (vertical columns by default)
+                java.util.List<com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.ActivityPartition> lanes =
+                    new java.util.ArrayList<>(((com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.Activity) el.getOwner()).getPartition());
+                java.util.List<com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.ActivityPartition> none = new java.util.ArrayList<>();
+                boolean horizontal = Boolean.TRUE.equals(json.get("horizontal"));
+                created = com.nomagic.magicdraw.openapi.uml.PresentationElementsManager.getInstance().createSwimlane(
+                    horizontal ? lanes : none, horizontal ? none : lanes,
+                    (com.nomagic.magicdraw.uml.symbols.DiagramPresentationElement) diagram);
+            } else if (el instanceof com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityParameterNode
+                    && !Boolean.FALSE.equals(json.get("onFrame"))
+                    && diagramFrame(diagram) != null) {
+                created = addParameterNodeOnFrame(
+                    (com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityParameterNode) el,
+                    diagramFrame(diagram), xNum, yNum, (Number) json.get("width"), (Number) json.get("height"));
+                json.remove("width"); json.remove("height"); // already applied
+            } else if (xNum != null && yNum != null) {
                 // createShapeElement(Element, PresentationElement, boolean, Point)
                 java.awt.Point point = new java.awt.Point(xNum.intValue(), yNum.intValue());
                 Method createShape = pemClass.getMethod(
@@ -709,6 +726,19 @@ public class DiagramSymbolsHandler extends BaseHandler {
                 } catch (Exception dpEx) {
                     System.err.println("[DisplayPorts] skip: " + dpEx.getClass().getName() + ": " + dpEx.getMessage());
                 }
+            }
+
+            // Optional size in the same call (saves a separate set_bounds call)
+            Number wNum = (Number) json.get("width"), hNum = (Number) json.get("height");
+            boolean lane = el instanceof com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.ActivityPartition;
+            if (created != null && (wNum != null || hNum != null || lane)) {
+                Rectangle b = (Rectangle) created.getClass().getMethod("getBounds").invoke(created);
+                // ponytail: swimlane default 600px tall / 30px from frame top, so nodes fit inside; pass width/height to override
+                int x = lane && xNum != null ? xNum.intValue() : (lane ? Math.max(b.x, 20) : b.x);
+                int y = lane && yNum != null ? yNum.intValue() : (lane ? Math.max(b.y, 30) : b.y);
+                int w = wNum != null ? wNum.intValue() : b.width;
+                int h = hNum != null ? hNum.intValue() : (lane ? Math.max(b.height, 600) : b.height);
+                created.getClass().getMethod("setBounds", Rectangle.class).invoke(created, new Rectangle(x, y, w, h));
             }
 
             sm.closeSession(project);
@@ -1185,19 +1215,30 @@ public class DiagramSymbolsHandler extends BaseHandler {
         if (diagram == null) { sendError(exchange, 404, "DIAGRAM_NOT_FOUND: " + diagramId); return; }
 
         // 옵션: displayContainment (기본 false). 요구사항 계층 등에서 containment 표시가 필요할 때 true.
-        boolean displayContainment = false, noteAnchors = false;
+        // symbolIds: 지정 시 그 심볼(+그 안의 하위 심볼, 예: 파트 안 포트)에서 나가는 path만 그린다.
+        // onlyBetween: true면 상대편 끝도 지정 심볼들 안으로 제한(setOnlyBetweenThese).
+        boolean displayContainment = false, noteAnchors = false, onlyBetween = false;
+        java.util.Set<String> symbolIds = null;
         try {
             String body = readRequestBody(exchange);
             if (body != null && !body.trim().isEmpty()) {
                 JSONObject j = (JSONObject) new JSONParser().parse(body);
                 displayContainment = Boolean.TRUE.equals(j.get("displayContainment"));
                 noteAnchors = Boolean.TRUE.equals(j.get("displayNoteAnchors"));
+                onlyBetween = Boolean.TRUE.equals(j.get("onlyBetween"));
+                Object ids = j.get("symbolIds");
+                if (ids instanceof JSONArray && !((JSONArray) ids).isEmpty()) {
+                    symbolIds = new java.util.LinkedHashSet<>();
+                    for (Object o : (JSONArray) ids) symbolIds.add(String.valueOf(o));
+                }
             }
         } catch (Exception ignore) {}
-        final boolean fDisplayContainment = displayContainment, fNoteAnchors = noteAnchors;
+        final boolean fDisplayContainment = displayContainment, fNoteAnchors = noteAnchors, fOnlyBetween = onlyBetween;
+        final java.util.Set<String> fSymbolIds = symbolIds;
 
         // 결과/오류를 EDT 밖으로 전달하기 위한 홀더.
         final java.util.List<Object> keptPaths = new java.util.ArrayList<>();
+        final java.util.List<String> missingIds = new java.util.ArrayList<>();
         final int[] selectedCount = {0};
         final Throwable[] err = {null};
         final Object diagramFinal = diagram;
@@ -1214,6 +1255,20 @@ public class DiagramSymbolsHandler extends BaseHandler {
                     java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
                 java.util.List<Object> shapeSymbols = new java.util.ArrayList<>();
                 collectShapeSymbols(diagramFinal, shapeSymbols, visited);
+                if (fSymbolIds != null) {
+                    // 자기 자신 또는 조상이 지정 목록에 있는 shape만 남긴다.
+                    java.util.Set<String> found = new java.util.HashSet<>();
+                    shapeSymbols.removeIf(s -> {
+                        for (Object p = s; p != null && p != diagramFinal; ) {
+                            String id = getLocalId(p);
+                            if (fSymbolIds.contains(id)) { if (p == s) found.add(id); return false; }
+                            try { p = p.getClass().getMethod("getParent").invoke(p); } catch (Exception e) { p = null; }
+                        }
+                        return true;
+                    });
+                    for (String id : fSymbolIds) if (!found.contains(id)) missingIds.add(id);
+                    if (!missingIds.isEmpty()) { sm.cancelSession(project); return; }
+                }
                 selectedCount[0] = shapeSymbols.size();
                 if (shapeSymbols.isEmpty()) { sm.cancelSession(project); return; }
 
@@ -1228,6 +1283,16 @@ public class DiagramSymbolsHandler extends BaseHandler {
                 optClass.getMethod("setDisplayContainmentLinks", boolean.class).invoke(opts, fDisplayContainment);
                 try { optClass.getMethod("setDisplayNoteAnchors", boolean.class).invoke(opts, fNoteAnchors); } catch (Exception ignore) {}
                 try { optClass.getMethod("setDisplayPathsToSelf", boolean.class).invoke(opts, false); } catch (Exception ignore) {}
+                if (fOnlyBetween)
+                    optClass.getMethod("setOnlyBetweenThese", Collection.class).invoke(opts, shapeSymbols);
+
+                // 이미 그려진 관계 ID. 블록 심볼 안에 같은 요소를 그린 안쪽 심볼이 있어서,
+                // 다시 호출하면 안쪽 심볼에서 같은 관계를 또 그린다. 이것도 중복으로 보고 지운다.
+                java.util.Set<String> seenRel = new java.util.HashSet<>();
+                java.util.List<Object> existingPaths = new java.util.ArrayList<>();
+                collectPathSymbols(diagramFinal, existingPaths,
+                    java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>()));
+                for (Object pe : existingPaths) { String r = relationIdOfPath(pe); if (!r.isEmpty()) seenRel.add(r); }
 
                 Method displayPaths = dpeClass.getMethod("displayPathElements", Collection.class, optClass);
                 Object resultObj = displayPaths.invoke(null, shapeSymbols, opts);
@@ -1235,7 +1300,6 @@ public class DiagramSymbolsHandler extends BaseHandler {
                 // 같은 모델 관계가 여러 심볼 쌍에 중복으로 그려질 수 있어 관계 ID 기준 1개만 남긴다.
                 java.util.List<Object> dupPaths = new java.util.ArrayList<>();
                 if (resultObj instanceof Collection) {
-                    java.util.Set<String> seenRel = new java.util.HashSet<>();
                     for (Object pe : (Collection<?>) resultObj) {
                         String relId = relationIdOfPath(pe);
                         if (!relId.isEmpty() && !seenRel.add(relId)) dupPaths.add(pe);
@@ -1270,6 +1334,10 @@ public class DiagramSymbolsHandler extends BaseHandler {
             System.err.println("[DisplayAllPaths] error: " + err[0].getClass().getName() + ": " + err[0].getMessage());
             err[0].printStackTrace(System.err);
             sendError(exchange, 500, "Failed to display paths: " + err[0].getMessage());
+            return;
+        }
+        if (!missingIds.isEmpty()) {
+            sendError(exchange, 400, "SYMBOL_NOT_FOUND (not on diagram or not a shape symbol): " + missingIds);
             return;
         }
 
@@ -1735,6 +1803,51 @@ public class DiagramSymbolsHandler extends BaseHandler {
     /** 다이어그램 내 심볼을 elementId 기준으로 수집 (중첩 재귀 탐색 + PE 중복 제거)
      *  MagicDraw API에 따라 getPresentationElements가 이미 중첩 포함인 경우가 있어
      *  IdentityHashMap 기반으로 동일 PE 객체를 한 번만 처리한다. */
+    private static Object diagramFrame(Object diagram) {
+        try { return diagram.getClass().getMethod("getDiagramFrame").invoke(diagram); }
+        catch (Exception e) { return null; }
+    }
+
+    /**
+     * Activity parameter node on the diagram frame border: in/inout on the left edge, out/return on the right.
+     * y defaults to the next free slot on that edge; x is ignored (border is fixed).
+     */
+    private Object addParameterNodeOnFrame(com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityParameterNode apn,
+                                           Object frame,
+                                           Number xNumUnused, Number yNum, Number wNum, Number hNum) throws Exception {
+        // reflection: symbol classes are not on the compile classpath
+        com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Parameter par = apn.getParameter();
+        Object dir = par != null ? par.getDirection() : null;
+        boolean right = dir == com.nomagic.uml2.ext.magicdraw.classes.mdkernel.ParameterDirectionKindEnum.OUT
+                     || dir == com.nomagic.uml2.ext.magicdraw.classes.mdkernel.ParameterDirectionKindEnum.RETURN;
+        Rectangle fb = (Rectangle) frame.getClass().getMethod("getBounds").invoke(frame);
+        int w = wNum != null ? wNum.intValue() : 100, h = hNum != null ? hNum.intValue() : 40;
+        int y;
+        if (yNum != null) y = yNum.intValue();
+        else {
+            // ponytail: next slot = below the lowest parameter node already on this edge
+            y = fb.y + 60;
+            for (Object c : getPresentationElements(frame)) {
+                Object ce = c.getClass().getMethod("getElement").invoke(c);
+                if (!(ce instanceof com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityParameterNode)) continue;
+                Rectangle cb = (Rectangle) c.getClass().getMethod("getBounds").invoke(c);
+                boolean cRight = cb.x + cb.width / 2 > fb.x + fb.width / 2;
+                if (cRight == right) y = Math.max(y, cb.y + cb.height + 20);
+            }
+        }
+        int x = right ? fb.x + fb.width - w / 2 : fb.x - w / 2;
+        Class<?> pemClass = Class.forName(PEM_CLASS);
+        Object pem = pemClass.getMethod("getInstance").invoke(null);
+        Class<?> peClass = Class.forName("com.nomagic.magicdraw.uml.symbols.PresentationElement");
+        Object s = pemClass.getMethod("createShapeElement", Element.class, peClass, boolean.class, java.awt.Point.class)
+            .invoke(pem, apn, frame, true, new java.awt.Point(x, y));
+        if (s != null) {
+            Class<?> seClass = Class.forName("com.nomagic.magicdraw.uml.symbols.shapes.ShapeElement");
+            pemClass.getMethod("reshapeShapeElement", seClass, Rectangle.class).invoke(pem, s, new Rectangle(x, y, w, h));
+        }
+        return s;
+    }
+
     /** If el is a pin with no symbol and its action has one, create the pin symbol on the action. */
     private boolean ensurePinSymbol(Project project, Element el, Map<String, List<Object>> symbols) {
         if (!(el instanceof com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.Pin)) return false;
@@ -1828,6 +1941,10 @@ public class DiagramSymbolsHandler extends BaseHandler {
             return null;
         }
         if (candidates.size() == 1) return candidates.get(0);
+        // A name label etc. nested inside the element's own shape is not a real duplicate: keep outermost only.
+        List<Object> outer = new ArrayList<>();
+        for (Object sym : candidates) if (!hasAncestorIn(sym, candidates)) outer.add(sym);
+        if (outer.size() == 1) return outer.get(0);
         // 복수 심볼 — 후보 목록 반환
         StringJoiner arr = new StringJoiner(",", "[", "]");
         for (Object sym : candidates) {
@@ -1843,6 +1960,17 @@ public class DiagramSymbolsHandler extends BaseHandler {
         sendError(exchange, 409, "MULTIPLE_SYMBOLS: " + role + " element has " + candidates.size()
             + " symbols. Specify " + role + "SymbolId. candidates=" + arr);
         return null;
+    }
+
+    private boolean hasAncestorIn(Object sym, List<Object> others) {
+        try {
+            Object p = sym.getClass().getMethod("getParent").invoke(sym);
+            for (int i = 0; p != null && i < 50; i++) {
+                for (Object o : others) if (o == p) return true;
+                p = p.getClass().getMethod("getParent").invoke(p);
+            }
+        } catch (Exception ignore) {}
+        return false;
     }
 
     private String getLocalId(Object obj) {

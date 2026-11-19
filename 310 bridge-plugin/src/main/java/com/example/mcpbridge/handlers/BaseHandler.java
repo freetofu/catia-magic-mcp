@@ -1,7 +1,30 @@
 package com.example.mcpbridge.handlers;
 
 import com.nomagic.magicdraw.core.Project;
-import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
+import com.nomagic.magicdraw.openapi.uml.ModelElementsManager;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.CallBehaviorAction;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.InputPin;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.OutputPin;
+import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.SendSignalAction;
+import com.nomagic.uml2.ext.magicdraw.actions.mdcompleteactions.AcceptEventAction;
+import com.nomagic.uml2.ext.magicdraw.actions.mdintermediateactions.BroadcastSignalAction;
+import com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityEdge;
+import com.nomagic.uml2.ext.magicdraw.activities.mdbasicactivities.ActivityParameterNode;
+import com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.Activity;
+import com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.ActivityNode;
+import com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.ActivityPartition;
+import com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.DecisionNode;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.LiteralInteger;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.LiteralUnlimitedNatural;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.OpaqueExpression;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Parameter;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.ParameterDirectionKind;
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.ParameterDirectionKindEnum;
+import com.nomagic.uml2.ext.magicdraw.commonbehaviors.mdbasicbehaviors.Behavior;
+import com.nomagic.uml2.ext.magicdraw.commonbehaviors.mdcommunications.Signal;
+import com.nomagic.uml2.ext.magicdraw.commonbehaviors.mdcommunications.SignalEvent;
+import com.nomagic.uml2.ext.magicdraw.commonbehaviors.mdcommunications.Trigger;
+import com.nomagic.uml2.impl.ElementsFactory;import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.magicdraw.uml.BaseElement;
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper;
@@ -452,5 +475,150 @@ public abstract class BaseHandler implements HttpHandler {
                     collectStereotypeAttributes(g, out, visited);
             }
         } catch (Exception ignore) {}
+    }
+
+    // -- Activity diagram fields (element create/update + relation create) --
+
+    private static String str(org.json.simple.JSONObject json, String key) {
+        Object o = json.get(key);
+        return o == null ? null : o.toString();
+    }
+
+    /**
+     * guard/weight (edges), behaviorId (CallBehaviorAction, DecisionNode), signalId (send/accept actions),
+     * parameterId/direction (ActivityParameterNode, Parameter), partitionIds (nodes), representsId (partitions).
+     */
+    protected void applyActivityProps(Project project, Element el, org.json.simple.JSONObject json) throws Exception {
+        ElementsFactory f = project.getElementsFactory();
+
+        String guard = str(json, "guard"), weight = str(json, "weight");
+        if (guard != null || weight != null) {
+            if (!(el instanceof ActivityEdge)) throw new Exception("guard/weight: ControlFlow/ObjectFlow only");
+            ActivityEdge edge = (ActivityEdge) el;
+            if (guard != null) {
+                if (guard.isEmpty()) edge.setGuard(null);
+                else {
+                    OpaqueExpression oe = f.createOpaqueExpressionInstance();
+                    oe.getBody().add(guard);
+                    edge.setGuard(oe);
+                }
+            }
+            if (weight != null) {
+                if ("*".equals(weight.trim())) {
+                    LiteralUnlimitedNatural w = f.createLiteralUnlimitedNaturalInstance();
+                    w.setValue(-1); // -1 = unlimited (*)
+                    edge.setWeight(w);
+                } else {
+                    LiteralInteger w = f.createLiteralIntegerInstance();
+                    w.setValue(Integer.parseInt(weight.trim()));
+                    edge.setWeight(w);
+                }
+            }
+        }
+
+        String behaviorId = str(json, "behaviorId");
+        if (behaviorId != null) {
+            Element b = resolveElement(project, behaviorId);
+            if (!(b instanceof Behavior)) throw new Exception("behaviorId is not an Activity/Behavior: " + behaviorId);
+            if (el instanceof CallBehaviorAction) {
+                ((CallBehaviorAction) el).setBehavior((Behavior) b);
+                syncPins(f, (CallBehaviorAction) el);
+            } else if (el instanceof DecisionNode) {
+                ((DecisionNode) el).setDecisionInput((Behavior) b);
+            } else throw new Exception("behaviorId: CallBehaviorAction/DecisionNode only");
+        }
+
+        String signalId = str(json, "signalId");
+        if (signalId != null) {
+            Element s = resolveElement(project, signalId);
+            if (!(s instanceof Signal)) throw new Exception("signalId is not a Signal: " + signalId);
+            Signal sig = (Signal) s;
+            if (el instanceof SendSignalAction) ((SendSignalAction) el).setSignal(sig);
+            else if (el instanceof BroadcastSignalAction) ((BroadcastSignalAction) el).setSignal(sig);
+            else if (el instanceof AcceptEventAction) {
+                SignalEvent ev = f.createSignalEventInstance();
+                ev.setName(sig.getName());
+                ev.setSignal(sig);
+                ModelElementsManager.getInstance().addElement(ev, nearestPackage(el));
+                Trigger t = f.createTriggerInstance();
+                t.setEvent(ev);
+                ((AcceptEventAction) el).getTrigger().add(t);
+            } else throw new Exception("signalId: SendSignalAction/BroadcastSignalAction/AcceptEventAction only");
+        }
+
+        String parameterId = str(json, "parameterId"), direction = str(json, "direction");
+        if (el instanceof ActivityParameterNode) {
+            ActivityParameterNode apn = (ActivityParameterNode) el;
+            if (parameterId != null) {
+                Element p = resolveElement(project, parameterId);
+                if (!(p instanceof Parameter)) throw new Exception("parameterId is not a Parameter: " + parameterId);
+                apn.setParameter((Parameter) p);
+            } else if (apn.getParameter() == null && apn.getOwner() instanceof Activity) {
+                // ponytail: auto-create the matching Activity parameter (same name/type) so one call is enough
+                Parameter p = f.createParameterInstance();
+                p.setName(apn.getName());
+                p.setType(apn.getType());
+                ((Activity) apn.getOwner()).getOwnedParameter().add(p);
+                apn.setParameter(p);
+            }
+            if (direction != null && apn.getParameter() != null) apn.getParameter().setDirection(parseDirection(direction));
+        } else if (el instanceof Parameter) {
+            if (direction != null) ((Parameter) el).setDirection(parseDirection(direction));
+        } else if (parameterId != null || direction != null) {
+            throw new Exception("parameterId/direction: ActivityParameterNode/Parameter only");
+        }
+
+        Object partIds = json.get("partitionIds");
+        if (partIds instanceof java.util.List) {
+            if (!(el instanceof ActivityNode)) throw new Exception("partitionIds: actions/nodes only");
+            for (Object id : (java.util.List<?>) partIds) {
+                Element p = resolveElement(project, String.valueOf(id));
+                if (!(p instanceof ActivityPartition)) throw new Exception("not an ActivityPartition: " + id);
+                if (!((ActivityNode) el).getInPartition().contains(p)) ((ActivityNode) el).getInPartition().add((ActivityPartition) p);
+            }
+        }
+
+        String representsId = str(json, "representsId");
+        if (representsId != null) {
+            if (!(el instanceof ActivityPartition)) throw new Exception("representsId: ActivityPartition only");
+            Element r = resolveElement(project, representsId);
+            if (r == null) throw new Exception("representsId element not found: " + representsId);
+            ((ActivityPartition) el).setRepresents(r);
+        }
+    }
+
+    private static ParameterDirectionKind parseDirection(String d) throws Exception {
+        ParameterDirectionKind k = ParameterDirectionKindEnum.getByName(d.trim().toLowerCase());
+        if (k == null) throw new Exception("direction must be in/out/inout/return: " + d);
+        return k;
+    }
+
+    /** Create missing pins on a CallBehaviorAction from its behavior's parameters (matched by name). */
+    private static void syncPins(ElementsFactory f, CallBehaviorAction a) {
+        java.util.Set<String> have = new java.util.HashSet<>();
+        for (InputPin p : a.getArgument()) have.add("in:" + p.getName());
+        for (OutputPin p : a.getResult()) have.add("out:" + p.getName());
+        for (Parameter par : a.getBehavior().getOwnedParameter()) {
+            ParameterDirectionKind d = par.getDirection();
+            boolean in  = d == ParameterDirectionKindEnum.IN  || d == ParameterDirectionKindEnum.INOUT;
+            boolean out = d == ParameterDirectionKindEnum.OUT || d == ParameterDirectionKindEnum.INOUT
+                       || d == ParameterDirectionKindEnum.RETURN;
+            if (in && have.add("in:" + par.getName())) {
+                InputPin p = f.createInputPinInstance();
+                p.setName(par.getName()); p.setType(par.getType());
+                a.getArgument().add(p);
+            }
+            if (out && have.add("out:" + par.getName())) {
+                OutputPin p = f.createOutputPinInstance();
+                p.setName(par.getName()); p.setType(par.getType());
+                a.getResult().add(p);
+            }
+        }
+    }
+
+    private static Element nearestPackage(Element el) {
+        Element e = el;
+        while (e != null && !(e instanceof com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Package)) e = e.getOwner();
+        return e;
     }
 }

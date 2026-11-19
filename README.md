@@ -79,6 +79,8 @@ All tool names are prefixed with `catia_magic_`.
 - `add_element_to_diagram` can auto-display ports for blocks and part properties.
 - `display_all_paths` removes duplicate paths; containment links are off by default
   (`display_containment=true` to show them, e.g. for requirement hierarchies).
+  `symbol_ids` limits it to paths of the given symbols (and their nested ports);
+  add `only_between=true` to keep both ends inside that set.
 - `export_diagram` writes a PNG to the temp folder and returns its path, so the client can look at the diagram.
 - `reorder_attributes` changes the order of a block's properties/ports (listed IDs go first, the rest keep their order).
 - `layout_diagram`: `smart`/`compact` currently fall back to the standard quick layout (hierarchic).

@@ -186,11 +186,12 @@ class AsyncBridgeClient:
         """GET /project/{id}/elements → {"elements": [{"id", "name", "type"}]}"""
         return await self._get(f"/project/{project_id}/elements")
 
-    async def search_elements(self, project_id: str, query: str) -> dict:
+    async def search_elements(self, project_id: str, query: str, include_library: bool = False) -> dict:
         """GET /project/{id}/elements?query=str → {"elements": [...], "query": str}"""
-        return await self._get(
-            f"/project/{project_id}/elements", params={"query": query}
-        )
+        params = {"query": query}
+        if include_library:
+            params["includeLibrary"] = "true"
+        return await self._get(f"/project/{project_id}/elements", params=params)
 
     async def get_element(self, project_id: str, element_id: str) -> dict:
         """GET /project/{id}/elements/{eid} → {"id", "name", "type", "ownerId", "childCount"}"""
@@ -210,6 +211,7 @@ class AsyncBridgeClient:
         default_value: Optional[str] = None,
         body_text: Optional[str] = None,
         annotated_element_ids: Optional[list[str]] = None,
+        extra: Optional[dict] = None,
     ) -> dict:
         """POST /project/{id}/element → 201: {"id", "name", "type", "stereotype"}"""
         # update_element과 같은 규칙(is not None)을 쓴다. 빈 문자열을 조용히 버리면
@@ -233,6 +235,7 @@ class AsyncBridgeClient:
             body["body"] = body_text
         if annotated_element_ids is not None:
             body["annotatedElementIds"] = annotated_element_ids
+        body.update(extra or {})
         return await self._post(f"/project/{project_id}/element", body)
 
     async def update_element(
@@ -250,6 +253,7 @@ class AsyncBridgeClient:
         icon_path: Optional[str] = None,
         body_text: Optional[str] = None,
         annotated_element_ids: Optional[list[str]] = None,
+        extra: Optional[dict] = None,
     ) -> dict:
         """PUT /project/{id}/elements/{eid} → {"id", "name", "type", "ownerId", "childCount"}"""
         body: dict[str, Any] = {}
@@ -275,6 +279,7 @@ class AsyncBridgeClient:
             body["body"] = body_text
         if annotated_element_ids is not None:
             body["annotatedElementIds"] = annotated_element_ids
+        body.update(extra or {})
         return await self._put(f"/project/{project_id}/elements/{element_id}", body)
 
     async def delete_element(self, project_id: str, element_id: str) -> dict:
@@ -362,9 +367,18 @@ class AsyncBridgeClient:
         x: Optional[int] = None,
         y: Optional[int] = None,
         auto_display_ports: bool = False,
+        horizontal: bool = False,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
     ) -> dict:
         """POST /project/{id}/diagrams/{did}/symbols"""
         body: dict[str, Any] = {"elementId": element_id, "autoDisplayPorts": auto_display_ports}
+        if horizontal:
+            body["horizontal"] = True
+        if width is not None:
+            body["width"] = width
+        if height is not None:
+            body["height"] = height
         if x is not None:
             body["x"] = x
         if y is not None:
@@ -538,17 +552,27 @@ class AsyncBridgeClient:
         diagram_id: str,
         display_containment: bool = False,
         display_note_anchors: bool = False,
+        symbol_ids: Optional[list[str]] = None,
+        only_between: bool = False,
     ) -> dict:
         """POST /project/{id}/diagrams/{did}/paths/display-all
         → {"diagramId", "selectedSymbolCount", "count", "paths":[{id,relationId,relationName}]}
-        다이어그램에 이미 배치된 모든 심볼을 선택한 상태로
+        다이어그램에 이미 배치된 심볼(symbol_ids 지정 시 그 심볼과 하위 심볼만)을 선택한 상태로
         DisplayPathElements.displayPathElements()를 호출하여
-        심볼 사이의 모든 모델 관계를 path로 자동 시각화한다.
+        심볼 사이의 모델 관계를 path로 자동 시각화한다.
         display_containment=True이면 containment(소유) 링크도 함께 표시한다(기본 False).
+        only_between=True이면 path 양 끝이 모두 선택 심볼인 것만 그린다.
         """
+        body: dict[str, Any] = {
+            "displayContainment": display_containment,
+            "displayNoteAnchors": display_note_anchors,
+            "onlyBetween": only_between,
+        }
+        if symbol_ids:
+            body["symbolIds"] = symbol_ids
         return await self._post(
             f"/project/{project_id}/diagrams/{diagram_id}/paths/display-all",
-            {"displayContainment": display_containment, "displayNoteAnchors": display_note_anchors},
+            body,
             timeout=SLOW_TIMEOUT_SECONDS,
         )
 
@@ -564,6 +588,7 @@ class AsyncBridgeClient:
         owner_id: Optional[str] = None,
         source_part_id: Optional[str] = None,
         target_part_id: Optional[str] = None,
+        extra: Optional[dict] = None,
     ) -> dict:
         """POST /project/{id}/relation → 201: {"id", "name", "type", "sourceId", "targetId"}"""
         body: dict[str, Any] = {
@@ -579,6 +604,7 @@ class AsyncBridgeClient:
             body["sourcePartId"] = source_part_id
         if target_part_id is not None:
             body["targetPartId"] = target_part_id
+        body.update(extra or {})
         return await self._post(f"/project/{project_id}/relation", body)
 
     async def list_relations(self, project_id: str) -> dict:
