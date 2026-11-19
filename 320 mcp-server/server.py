@@ -50,6 +50,7 @@ Bridge Plugin REST API와 1:1 매핑된 MCP Tools를 제공합니다.
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, AsyncIterator, NoReturn, Optional
 
@@ -263,15 +264,19 @@ async def catia_magic_list_elements(
             ),
         ),
     ] = None,
+    include_library: Annotated[
+        bool,
+        Field(default=False, description=(
+            "query 검색 시 SysML·UML 표준 프로파일 등 불러온(읽기 전용) 라이브러리 요소도 포함할지. "
+            "기본 False — 사용자 모델만. 표준 스테레오타입·타입을 찾을 때만 True."
+        )),
+    ] = False,
 ) -> dict[str, Any]:
     """프로젝트 내 요소 목록을 반환하거나 이름/타입으로 검색합니다.
 
     query 미지정 시: 프로젝트 루트(primaryModel)에서 깊이 2까지 요소 목록 반환.
     query 지정 시: 이름 또는 humanType에 query 문자열이 포함된 요소 재귀 검색 (깊이 5).
-
-    Args:
-        project_id: 대상 프로젝트 ID (또는 "active")
-        query: 검색어 (선택 사항)
+    기본으로 표준 프로파일 등 라이브러리 요소는 빠집니다(include_library=True로 포함).
 
     Returns:
         query 미지정: {"elements": [{"id": str, "name": str, "type": str}, ...]}
@@ -288,7 +293,7 @@ async def catia_magic_list_elements(
     try:
         bridge = _get_bridge()
         if query is not None:
-            return await bridge.search_elements(project_id, query)
+            return await bridge.search_elements(project_id, query, include_library)
         return await bridge.list_elements(project_id)
     except Exception as e:
         _fail(e)
@@ -318,14 +323,11 @@ async def catia_magic_get_element(
         ),
     ],
 ) -> dict[str, Any]:
-    """특정 요소의 상세 정보(id, name, type, ownerId, childCount)를 반환합니다.
-
-    Args:
-        project_id: 대상 프로젝트 ID (또는 "active")
-        element_id: 요소 ID (localID)
+    """특정 요소의 상세 정보를 반환합니다.
 
     Returns:
-        성공: {"id": str, "name": str, "type": str, "ownerId": str, "childCount": int}
+        성공: {"id", "name", "type", "ownerId", "childCount", "documentation", "isAbstract", "visibility",
+               "typeId", "typeName", "aggregation", "lower", "upper", "sourceId", "targetId", "stereotypes"}
         미존재: {"error": str, "message": str}  (HTTP 404)
         실패:   {"error": str, "message": str}
 
@@ -337,6 +339,36 @@ async def catia_magic_get_element(
         return await _get_bridge().get_element(project_id, element_id)
     except Exception as e:
         _fail(e)
+
+
+# ── Activity diagram fields (shared by create/update element and create relation) ──
+Guard = Annotated[Optional[str], Field(default=None, description=(
+    "ControlFlow/ObjectFlow 전용 — 분기 조건(guard). 예: 'speed > 100', 'else'. 빈 문자열이면 조건 삭제."))]
+Weight = Annotated[Optional[int | str], Field(default=None, description=(
+    "ControlFlow/ObjectFlow 전용 — 가중치(한 번에 넘기는 토큰 수). 정수 또는 '*'(무제한)."))]
+BehaviorId = Annotated[Optional[str], Field(default=None, description=(
+    "CallBehaviorAction: 실행할 하위 Activity ID. 지정하면 그 Activity의 파라미터대로 입출력 핀이 자동 생성됨"
+    "(같은 이름 핀이 있으면 건너뜀). DecisionNode: decisionInput Behavior ID."))]
+SignalId = Annotated[Optional[str], Field(default=None, description=(
+    "SendSignalAction/BroadcastSignalAction: 보낼 Signal ID. AcceptEventAction: 받을 Signal ID "
+    "(SignalEvent+Trigger 자동 생성). Signal은 element_type='Signal'로 만듭니다."))]
+ParameterId = Annotated[Optional[str], Field(default=None, description=(
+    "ActivityParameterNode 전용 — 연결할 Activity Parameter ID. 생략하면 노드 생성 시 같은 이름·타입의 "
+    "Parameter가 소유 Activity에 자동 생성되어 연결됨."))]
+Direction = Annotated[Optional[str], Field(default=None, description=(
+    "ActivityParameterNode/Parameter 전용 — 'in' | 'out' | 'inout' | 'return'."))]
+PartitionIds = Annotated[Optional[list[str]], Field(default=None, description=(
+    "액션/노드 전용 — 이 노드가 속할 ActivityPartition(Swimlane 칸) ID 목록."))]
+RepresentsId = Annotated[Optional[str], Field(default=None, description=(
+    "ActivityPartition 전용 — 칸이 나타내는 요소 ID (예: 담당 Block 또는 Part Property)."))]
+
+
+def _activity_extra(**kw: Any) -> dict[str, Any]:
+    """snake_case activity params -> bridge JSON keys, dropping None."""
+    keys = {"guard": "guard", "weight": "weight", "behavior_id": "behaviorId", "signal_id": "signalId",
+            "parameter_id": "parameterId", "direction": "direction", "partition_ids": "partitionIds",
+            "represents_id": "representsId"}
+    return {keys[k]: v for k, v in kw.items() if v is not None}
 
 
 @mcp.tool(
@@ -463,22 +495,26 @@ async def catia_magic_create_element(
             ),
         ),
     ] = None,
+    behavior_id: BehaviorId = None,
+    signal_id: SignalId = None,
+    parameter_id: ParameterId = None,
+    direction: Direction = None,
+    partition_ids: PartitionIds = None,
+    represents_id: RepresentsId = None,
+    guard: Guard = None,
+    weight: Weight = None,
 ) -> dict[str, Any]:
-    """프로젝트 내에 새 UML/SysML 요소를 생성합니다.
+    """새 UML/SysML 요소를 만들고, 같은 호출에서 속성까지 설정합니다.
 
-    MagicDraw ElementsFactory의 create{type}Instance() 메서드를 통해 요소를 생성합니다.
-    stereotype을 지정하면 생성 후 SysML/UML 프로파일에서 해당 스테레오타입을 자동으로 적용합니다.
-    type_id로 Property/Port의 타입을 지정할 수 있습니다 (Part Property에 필수).
-    aggregation='composite'로 Part Property를 정의합니다.
-
-    Args:
-        project_id:   대상 프로젝트 ID (또는 "active")
-        element_type: 요소 타입명 (예: "Class", "Package", "Actor", "Property", "Port")
-        name:         요소 이름
-        owner_id:     소유자 요소 ID (생략 시 루트에 생성)
-        stereotype:   적용할 스테레오타입 이름 (예: "Block", "Requirement")
-        type_id:      Property/Port의 타입 요소 ID (예: 서브시스템 Block ID)
-        aggregation:  집합 종류 — 'composite'이면 Part Property
+    만들 때 함께 설정 가능한 것 (요소 종류별):
+    - 공통: owner_id, stereotype
+    - Property/Port: type_id, aggregation('composite'=Part Property), multiplicity, default_value
+    - Stereotype: metaclasses / Comment(노트): body, annotated_element_ids
+    - 액티비티: behavior_id(CallBehaviorAction→하위 Activity, 파라미터대로 핀 자동 생성),
+      signal_id, parameter_id·direction(ActivityParameterNode는 생략 시 Parameter 자동 생성 / Parameter),
+      partition_ids, represents_id, guard·weight
+    - 핀: element_type='InputPin'/'OutputPin', owner_id=액션
+    여러 액션·흐름을 한 번에 만들 땐 catia_magic_create_activity_flow가 더 간단합니다.
 
     Returns:
         성공 (HTTP 201): {"id": str, "name": str, "type": str, "stereotype": str}
@@ -499,6 +535,9 @@ async def catia_magic_create_element(
         return await _get_bridge().create_element(
             project_id, element_type, name, owner_id, stereotype, type_id, aggregation, metaclasses,
             multiplicity, default_value, body, annotated_element_ids,
+            _activity_extra(behavior_id=behavior_id, signal_id=signal_id, parameter_id=parameter_id,
+                            direction=direction, partition_ids=partition_ids, represents_id=represents_id,
+                            guard=guard, weight=weight),
         )
     except Exception as e:
         _fail(e)
@@ -607,19 +646,25 @@ async def catia_magic_update_element(
             ),
         ),
     ] = None,
+    behavior_id: BehaviorId = None,
+    signal_id: SignalId = None,
+    parameter_id: ParameterId = None,
+    direction: Direction = None,
+    partition_ids: PartitionIds = None,
+    represents_id: RepresentsId = None,
+    guard: Guard = None,
+    weight: Weight = None,
 ) -> dict[str, Any]:
-    """기존 요소의 이름, documentation, stereotype, type, aggregation을 수정합니다.
+    """기존 요소를 수정합니다. 준 값만 바뀌고 나머지는 그대로입니다.
 
-    변경 후 요소의 전체 정보를 반환합니다.
-
-    Args:
-        project_id:    대상 프로젝트 ID (또는 "active")
-        element_id:    수정할 요소 ID (localID)
-        name:          새 이름 (선택 사항)
-        documentation: 새 문서 텍스트 (선택 사항)
-        stereotype:    적용할 스테레오타입 이름 (선택 사항)
-        type_id:       Property/Port 타입 요소 ID (선택 사항)
-        aggregation:   집합 종류 (선택 사항)
+    수정 가능한 것 (요소 종류별):
+    - 공통: name, documentation, stereotype(추가 적용)
+    - Property/Port: type_id, aggregation, multiplicity, default_value
+    - Stereotype: metaclasses, icon_path / Comment(노트): body, annotated_element_ids
+    - 액티비티: behavior_id(이미 있는 CallBehaviorAction을 하위 Activity에 연결 + 파라미터대로 핀 자동 생성,
+      DecisionNode decisionInput), signal_id(Send/Broadcast/AcceptEvent 액션),
+      parameter_id·direction(ActivityParameterNode / Parameter), partition_ids(노드→Swimlane 칸),
+      represents_id(ActivityPartition), guard·weight(ControlFlow/ObjectFlow)
 
     Returns:
         성공: {"id": str, "name": str, "type": str, "ownerId": str, "childCount": int}
@@ -630,6 +675,9 @@ async def catia_magic_update_element(
         return await _get_bridge().update_element(
             project_id, element_id, name, documentation, stereotype, type_id, aggregation, metaclasses,
             multiplicity, default_value, icon_path, body, annotated_element_ids,
+            _activity_extra(behavior_id=behavior_id, signal_id=signal_id, parameter_id=parameter_id,
+                            direction=direction, partition_ids=partition_ids, represents_id=represents_id,
+                            guard=guard, weight=weight),
         )
     except Exception as e:
         _fail(e)
@@ -1115,9 +1163,37 @@ async def catia_magic_get_diagram_symbols(
         }
     """
     try:
-        return await _get_bridge().get_diagram_symbols(project_id, diagram_id)
+        return _prune_symbols(await _get_bridge().get_diagram_symbols(project_id, diagram_id))
     except Exception as e:
         _fail(e)
+
+
+def _prune_symbols(res: dict[str, Any]) -> dict[str, Any]:
+    """Drop label/compartment parts (no element) and inner duplicates of the same element.
+
+    Kept symbols whose parent was dropped are re-parented to the nearest kept ancestor.
+    """
+    syms = res.get("symbols")
+    if not isinstance(syms, list):
+        return res
+    by_id = {s.get("id"): s for s in syms}
+
+    def keep(s: dict[str, Any]) -> bool:
+        if not s.get("elementId"):
+            return False
+        p = by_id.get(s.get("parentSymbolId"))
+        return not (p and p.get("elementId") == s.get("elementId"))
+
+    kept = {s["id"] for s in syms if keep(s)}
+    out = []
+    for s in syms:
+        if s["id"] not in kept:
+            continue
+        pid = s.get("parentSymbolId")
+        while pid and pid not in kept:
+            pid = by_id.get(pid, {}).get("parentSymbolId")
+        out.append({**s, "parentSymbolId": pid})
+    return {**res, "symbols": out}
 
 
 @mcp.tool(
@@ -1276,11 +1352,27 @@ async def catia_magic_add_element_to_diagram(
             ),
         ),
     ] = False,
+    horizontal: Annotated[
+        Optional[bool],
+        Field(default=False, description=(
+            "ActivityPartition 전용 — element_id로 Partition을 주면 그 Activity의 최상위 Partition 전체가 "
+            "Swimlane 하나로 그려집니다. 기본은 세로 칸, True면 가로 칸."))
+    ] = False,
+    width: Annotated[
+        Optional[int],
+        Field(default=None, description="심볼 너비 (픽셀). 생략 시 기본 크기. set_bounds를 따로 부를 필요 없음.")
+    ] = None,
+    height: Annotated[
+        Optional[int],
+        Field(default=None, description="심볼 높이 (픽셀). 생략 시 기본 크기.")
+    ] = None,
 ) -> dict[str, Any]:
     """모델 요소를 다이어그램에 심볼로 추가합니다.
 
     x, y를 지정하면 해당 좌표에 배치되고, 생략하면 MagicDraw가 자동으로
     위치를 결정합니다. 요소가 다이어그램 소유자(owner)의 하위 요소여야 합니다.
+    ActivityParameterNode는 다이어그램 프레임 테두리에 붙습니다(in/inout=왼쪽, out/return=오른쪽,
+    x는 무시, y 생략 시 그 변의 다음 빈자리).
 
     Args:
         project_id: 대상 프로젝트 ID (또는 "active")
@@ -1306,7 +1398,7 @@ async def catia_magic_add_element_to_diagram(
     """
     try:
         return await _get_bridge().add_element_to_diagram(
-            project_id, diagram_id, element_id, x, y, auto_display_ports
+            project_id, diagram_id, element_id, x, y, auto_display_ports, bool(horizontal), width, height
         )
     except Exception as e:
         _fail(e)
@@ -1703,8 +1795,23 @@ async def catia_magic_display_all_paths(
         bool,
         Field(description="노트(Comment)와 annotatedElement 사이 앵커 선도 그릴지 여부. 기본 False."),
     ] = False,
+    symbol_ids: Annotated[
+        Optional[list[str]],
+        Field(description=(
+            "대상 심볼 ID 목록(get_diagram_symbols의 심볼 ID). 지정하면 이 심볼들(+그 안의 "
+            "하위 심볼, 예: 파트 안 포트)에 연결된 path만 그립니다. 생략하면 다이어그램 전체. "
+            "다이어그램에 없거나 shape가 아닌 ID가 있으면 아무것도 그리지 않고 오류를 냅니다."
+        )),
+    ] = None,
+    only_between: Annotated[
+        bool,
+        Field(description=(
+            "True면 path 양 끝이 모두 symbol_ids(및 하위 심볼) 안에 있는 것만 그립니다. "
+            "False(기본)면 지정 심볼과 다이어그램의 다른 아무 심볼 사이 path도 그립니다."
+        )),
+    ] = False,
 ) -> dict[str, Any]:
-    """다이어그램에 이미 배치된 모든 심볼 사이의 관계를 path로 자동 시각화합니다.
+    """다이어그램에 이미 배치된 심볼 사이의 관계를 path로 자동 시각화합니다.
 
     MagicDraw의 DisplayPathElements.displayPathElements API를 사용해
     다이어그램에 표시된 모든 shape 심볼(Part, Block, Port 등)을 선택한 상태로
@@ -1721,6 +1828,8 @@ async def catia_magic_display_all_paths(
         project_id: 대상 프로젝트 ID (또는 "active")
         diagram_id: 다이어그램 ID
         display_containment: containment 링크 표시 여부 (기본 False)
+        symbol_ids: 대상 심볼 ID 목록 (생략 시 전체)
+        only_between: True면 symbol_ids 사이 path만 (기본 False)
 
     Returns:
         성공: {
@@ -1738,7 +1847,8 @@ async def catia_magic_display_all_paths(
     """
     try:
         return await _get_bridge().display_all_paths(
-            project_id, diagram_id, display_containment, display_note_anchors
+            project_id, diagram_id, display_containment, display_note_anchors,
+            symbol_ids, only_between,
         )
     except Exception as e:
         _fail(e)
@@ -1833,6 +1943,8 @@ async def catia_magic_create_relation(
             ),
         ),
     ] = None,
+    guard: Guard = None,
+    weight: Weight = None,
 ) -> dict[str, Any]:
     """두 요소 사이에 관계(Relation)를 생성합니다.
 
@@ -1877,7 +1989,7 @@ async def catia_magic_create_relation(
     try:
         return await _get_bridge().create_relation(
             project_id, relation_type, source_id, target_id, name, owner_id,
-            source_part_id, target_part_id
+            source_part_id, target_part_id, _activity_extra(guard=guard, weight=weight)
         )
     except Exception as e:
         _fail(e)
@@ -2133,6 +2245,136 @@ async def catia_magic_move_symbols(
         )
     except Exception as e:
         _fail(e)
+
+
+_STEP_KEYS = {"behavior_id", "signal_id", "partition_ids", "parameter_id", "direction"}
+_SMALL_NODES = {"InitialNode", "ActivityFinalNode", "FlowFinalNode", "DecisionNode", "MergeNode",
+                "ForkNode", "JoinNode"}
+
+
+@mcp.tool(
+    name="catia_magic_create_activity_flow",
+    annotations={
+        "title": "CATIA Magic 액티비티 흐름 일괄 생성",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def catia_magic_create_activity_flow(
+    project_id: Annotated[str, Field(description="대상 프로젝트 ID (또는 'active')")],
+    activity_id: Annotated[str, Field(description="노드·흐름을 만들 Activity ID")],
+    steps: Annotated[
+        list[dict[str, Any]],
+        Field(description=(
+            "노드 목록(위→아래 순서). 각 항목: {'name': str, 'type': 기본 'CallBehaviorAction' "
+            "(DecisionNode/MergeNode/ForkNode/JoinNode/OpaqueAction 등 가능), 'key': 흐름에서 부를 이름(기본=name), "
+            "'behavior_id', 'signal_id', 'partition_ids', 'width', 'height', 'x', 'y' (모두 선택), "
+            "'parameter_id', 'direction' (ActivityParameterNode용), "
+            "'guard': 앞 노드에서 이 노드로 오는 자동 흐름의 조건}. "
+            "type='ActivityParameterNode'는 다이어그램 프레임 테두리에 놓이고(in/inout=왼쪽, out/return=오른쪽, "
+            "'y'로 높이 지정 가능), 순차 자동 연결에서 빠짐 — ObjectFlow는 flows로 직접 연결. "
+            "시작(InitialNode)·종료(ActivityFinalNode)는 add_initial/add_final로 자동 추가."
+        )),
+    ],
+    flows: Annotated[
+        Optional[list[dict[str, Any]]],
+        Field(default=None, description=(
+            "추가 흐름(분기·병합 등). 각 항목: {'from': key, 'to': key, 'guard': 선택, 'type': 기본 'ControlFlow'}. "
+            "key는 steps의 key/name, 또는 'initial'/'final'."
+        )),
+    ] = None,
+    sequential: Annotated[
+        bool, Field(default=True, description="True면 steps 순서대로 ControlFlow 자동 연결 (시작→1→2→…→종료).")
+    ] = True,
+    add_initial: Annotated[bool, Field(default=True, description="맨 앞에 InitialNode 추가")] = True,
+    add_final: Annotated[bool, Field(default=True, description="맨 뒤에 ActivityFinalNode 추가")] = True,
+    diagram_id: Annotated[
+        Optional[str], Field(default=None, description="지정하면 노드와 흐름을 이 다이어그램에 위→아래로 배치")
+    ] = None,
+    start_x: Annotated[int, Field(default=300, description="배치 시작 X")] = 300,
+    start_y: Annotated[int, Field(default=60, description="배치 시작 Y")] = 60,
+    gap: Annotated[int, Field(default=40, description="노드 사이 세로 간격(픽셀)")] = 40,
+    action_width: Annotated[int, Field(default=160, description="액션 기본 너비")] = 160,
+    action_height: Annotated[int, Field(default=50, description="액션 기본 높이")] = 50,
+) -> dict[str, Any]:
+    """액티비티 하나의 노드와 흐름을 한 번에 만들고(선택) 다이어그램에 배치합니다.
+
+    순서 목록만 주면 시작→액션들→종료가 ControlFlow로 이어집니다. 분기는 DecisionNode/MergeNode를
+    steps에 넣고 sequential=False + flows로 직접 연결하세요. 중간에 실패하면 그때까지 만든 결과와
+    오류를 함께 돌려줍니다(이미 만든 요소는 그대로 남음).
+
+    Returns:
+        {"nodes": {key: {"id", "symbolId"}}, "flows": [{"id", "from", "to", "pathId"}], "error"?: str}
+    """
+    b = _get_bridge()
+    nodes: dict[str, dict[str, Any]] = {}
+    made_flows: list[dict[str, Any]] = []
+    order: list[str] = []
+    y = start_y
+    try:
+        plan = []
+        if add_initial:
+            plan.append({"name": "", "type": "InitialNode", "key": "initial"})
+        plan += steps
+        if add_final:
+            plan.append({"name": "", "type": "ActivityFinalNode", "key": "final"})
+
+        for st in plan:
+            typ = st.get("type", "CallBehaviorAction")
+            key = st.get("key") or st.get("name")
+            if not key or key in nodes:
+                raise ValueError(f"step key가 없거나 중복: {key!r} (같은 이름이면 'key'를 따로 지정)")
+            extra = _activity_extra(**{k: st[k] for k in _STEP_KEYS if k in st})
+            el = await b.create_element(project_id, typ, st.get("name", ""), activity_id, extra=extra)
+            nodes[key] = {"id": el["id"]}
+            if typ == "ActivityParameterNode":  # on the frame border, not in the vertical chain
+                if diagram_id:
+                    sym = await b.add_element_to_diagram(
+                        project_id, diagram_id, el["id"], None, st.get("y"),
+                        width=st.get("width"), height=st.get("height"))
+                    nodes[key]["symbolId"] = sym.get("id")
+                continue
+            order.append(key)
+            if diagram_id:
+                small = typ in _SMALL_NODES
+                w = st.get("width", None if small else action_width)
+                h = st.get("height", None if small else action_height)
+                sx = st.get("x", start_x + (action_width // 2 - 15 if small else 0))
+                sym = await b.add_element_to_diagram(
+                    project_id, diagram_id, el["id"], sx, st.get("y", y), width=w, height=h)
+                nodes[key]["symbolId"] = sym.get("id")
+                y = st.get("y", y) + (h or sym.get("height") or 30) + gap
+
+        edges: list[dict[str, Any]] = []
+        if sequential:
+            for a, c in zip(order, order[1:]):
+                guard = next((s.get("guard") for s in steps if (s.get("key") or s.get("name")) == c), None)
+                edges.append({"from": a, "to": c, "guard": guard})
+        edges += flows or []
+        for e in edges:
+            src, dst = nodes.get(e["from"]), nodes.get(e["to"])
+            if not src or not dst:
+                raise ValueError(f"흐름의 key를 찾을 수 없음: {e['from']} -> {e['to']}")
+            rel = await b.create_relation(
+                project_id, e.get("type", "ControlFlow"), src["id"], dst["id"],
+                extra=_activity_extra(guard=e.get("guard")))
+            f = {"id": rel["id"], "from": e["from"], "to": e["to"]}
+            if diagram_id:
+                try:
+                    path = await b.add_relation_to_diagram(
+                        project_id, diagram_id, rel["id"], src.get("symbolId"), dst.get("symbolId"))
+                    f["pathId"] = path.get("id")
+                except Exception as pe:  # MagicDraw often draws the flow line by itself
+                    m = re.search(r"existingPathId=([\w-]+)", str(pe))
+                    if not m:
+                        raise
+                    f["pathId"] = m.group(1)
+            made_flows.append(f)
+        return {"nodes": nodes, "flows": made_flows}
+    except Exception as e:
+        return {"nodes": nodes, "flows": made_flows, "error": str(e)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

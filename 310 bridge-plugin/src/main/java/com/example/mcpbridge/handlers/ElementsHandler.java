@@ -9,6 +9,8 @@ import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.InputPin;
 import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.InvocationAction;
 import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.OpaqueAction;
 import com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.OutputPin;
+import com.nomagic.uml2.ext.magicdraw.activities.mdfundamentalactivities.Activity;
+import com.nomagic.uml2.ext.magicdraw.activities.mdintermediateactivities.ActivityPartition;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Comment;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element;
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement;
@@ -129,13 +131,16 @@ public class ElementsHandler extends BaseHandler {
     private void searchElements(HttpExchange exchange, Project project, String query) throws IOException {
         try {
             StringJoiner items = new StringJoiner(",", "[", "]");
-            searchRecursive(project.getPrimaryModel(), query.toLowerCase(), items, 0, 5);
+            boolean lib = "true".equalsIgnoreCase(getQueryParam(exchange, "includeLibrary"));
+            searchRecursive(project.getPrimaryModel(), query.toLowerCase(), items, 0, 5, lib);
             sendJson(exchange, 200, "{\"elements\": " + items + ", \"query\": \"" + escapeJson(query) + "\"}");
         } catch (Exception e) { sendError(exchange, 500, "요소 검색 실패: " + e.getMessage()); }
     }
 
-    private void searchRecursive(Element parent, String query, StringJoiner joiner, int depth, int maxDepth) {
+    private void searchRecursive(Element parent, String query, StringJoiner joiner, int depth, int maxDepth, boolean lib) {
         for (Element child : parent.getOwnedElement()) {
+            // skip used projects / standard profiles (SysML, UML Standard Profile ...) unless asked
+            if (!lib && com.nomagic.magicdraw.core.ProjectUtilities.isElementInAttachedProject(child)) continue;
             if (child instanceof NamedElement) {
                 String name = ((NamedElement) child).getName();
                 String type = child.getHumanType();
@@ -143,7 +148,7 @@ public class ElementsHandler extends BaseHandler {
                         || (type != null && type.toLowerCase().contains(query)))
                     joiner.add(elementToJson(child));
             }
-            if (depth < maxDepth) searchRecursive(child, query, joiner, depth + 1, maxDepth);
+            if (depth < maxDepth) searchRecursive(child, query, joiner, depth + 1, maxDepth, lib);
         }
     }
 
@@ -188,6 +193,10 @@ public class ElementsHandler extends BaseHandler {
             Element newEl = createElementByType(project, typeName);
             if (newEl instanceof NamedElement) ((NamedElement) newEl).setName(name);
             if (newEl instanceof com.nomagic.uml2.ext.magicdraw.actions.mdbasicactions.Pin) addPin(newEl, owner);
+            else if (newEl instanceof ActivityPartition && owner instanceof Activity)
+                ((Activity) owner).getPartition().add((ActivityPartition) newEl);
+            else if (newEl instanceof ActivityPartition && owner instanceof ActivityPartition)
+                ((ActivityPartition) owner).getSubpartition().add((ActivityPartition) newEl);
             else ModelElementsManager.getInstance().addElement(newEl, owner);
             // 스테레오타입 적용 (선택적)
             if (stereotype != null && !stereotype.isEmpty()) stereotype = applyStereotype(project, newEl, stereotype);
@@ -196,6 +205,7 @@ public class ElementsHandler extends BaseHandler {
             applyMultiplicityAndDefault(project, newEl, json);
             applyMetaclasses(project, newEl, json.get("metaclasses"));
             applyComment(project, newEl, json);
+            applyActivityProps(project, newEl, json);
             sm.closeSession(project);
             revealInContainmentTree(project, newEl);  // 생성 직후 모델 탐색기에서 바로 보이도록 트리 펼치기
             sendJson(exchange, 201, "{\"id\":\"" + escapeJson(newEl.getLocalID()) + "\",\"name\":\"" + escapeJson(name) + "\",\"type\":\"" + escapeJson(newEl.getHumanType()) + "\",\"stereotype\":\"" + escapeJson(stereotype != null ? stereotype : "") + "\"}");
@@ -229,6 +239,7 @@ public class ElementsHandler extends BaseHandler {
             applyMetaclasses(project, el, json.get("metaclasses"));
             applyIcon(el, (String) json.get("iconPath"));
             applyComment(project, el, json);
+            applyActivityProps(project, el, json);
             sm.closeSession(project);
             sendJson(exchange, 200, elementToJsonDetailed(project, el));
         } catch (Exception e) { sm.cancelSession(project); sendError(exchange, 500, "요소 수정 실패: " + e.getMessage()); }

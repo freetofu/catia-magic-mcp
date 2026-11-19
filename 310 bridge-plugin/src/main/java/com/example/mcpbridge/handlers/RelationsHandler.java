@@ -144,6 +144,7 @@ public class RelationsHandler extends BaseHandler {
 
             if (name != null && !name.isEmpty() && relation instanceof NamedElement)
                 ((NamedElement) relation).setName(name);
+            applyActivityProps(project, relation, json);  // guard / weight on flows
 
             sm.closeSession(project);
             String relId   = escapeJson(relation.getLocalID());
